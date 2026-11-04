@@ -125,6 +125,49 @@ defmodule Autoangel.Kernel.ScoringTest do
     end
   end
 
+  # **Validates: Requirements 9.5**
+  # Feature: v1, Property 13: Score monotonicity
+  property "Feature: v1, Property 13: score monotonicity" do
+    check all(
+            baseline <- list_of(integer(-1_000..1_000), min_length: 3, max_length: 32),
+            side <- member_of([1, -1]),
+            near_delta <- integer(1..1_000),
+            additional_delta <- integer(1..1_000)
+          ) do
+      baseline = Enum.map(baseline, &(&1 * 1.0))
+      median = property_13_median(baseline)
+      near = median + side * near_delta
+      far = near + side * additional_delta
+
+      baseline_samples =
+        Enum.with_index(baseline, 1)
+        |> Enum.map(fn {value, index} -> {index * 1_000, value, :gauge} end)
+
+      candidate_timestamp = (length(baseline) + 1) * 1_000
+
+      assert {:ok, baseline_state, _results} =
+               ScoringElixir.score(initial_state(), baseline_samples)
+
+      assert {:ok, _near_state, [near_result]} =
+               ScoringElixir.score(baseline_state, [{candidate_timestamp, near, :gauge}])
+
+      assert {:ok, _far_state, [far_result]} =
+               ScoringElixir.score(baseline_state, [{candidate_timestamp, far, :gauge}])
+
+      assert near_result.score >= 0.0
+      assert far_result.score >= near_result.score
+    end
+  end
+
+  defp property_13_median(values) do
+    sorted = Enum.sort(values)
+    middle = div(length(sorted), 2)
+
+    if rem(length(sorted), 2) == 1,
+      do: Enum.at(sorted, middle),
+      else: (Enum.at(sorted, middle - 1) + Enum.at(sorted, middle)) / 2
+  end
+
   test "rejects malformed state, samples, and invalid parameters" do
     assert {:error, :bad_state} = ScoringElixir.score(<<0>>, [], %Params{})
     assert {:error, :invalid_samples} = ScoringElixir.score(initial_state(), [{1, 2}])
