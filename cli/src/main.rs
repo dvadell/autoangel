@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fmt;
-use std::time::Duration;
+use std::process::{Command as ProcessCommand, Stdio};
+use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -199,9 +201,12 @@ pub struct RunArgs {
     pub common: CommonArgs,
     #[arg(long)]
     pub name: String,
-    /// Command and arguments. Execution is implemented by task 17.2.
-    #[arg(last = true, required = true)]
-    pub command: Vec<String>,
+    /// Measure CPU time and maximum resident memory with wait4.
+    #[arg(long)]
+    pub measure_resources: bool,
+    /// Command and arguments, passed unchanged after `--`.
+    #[arg(last = true, required = true, value_parser = clap::value_parser!(OsString))]
+    pub command: Vec<OsString>,
 }
 
 #[derive(Clone, Args)]
@@ -261,14 +266,117 @@ fn validate_cli(cli: &Cli) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct RunMeasurement {
+    exit_code: i32,
+    wall_seconds: f64,
+    cpu_seconds: Option<f64>,
+    max_rss_bytes: Option<u64>,
+}
+
+fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
+    let program = args
+        .command
+        .first()
+        .ok_or_else(|| "missing command after `--`".to_owned())?;
+    let start = Instant::now();
+    let child = ProcessCommand::new(program)
+        .args(&args.command[1..])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("could not start `{}`: {error}", program.to_string_lossy()))?;
+
+    #[cfg(unix)]
+    let (exit_code, cpu_seconds, max_rss_bytes) = wait_for_child(child, args.measure_resources)?;
+    #[cfg(not(unix))]
+    let (exit_code, cpu_seconds, max_rss_bytes) = {
+        let mut child = child;
+        let status = child.wait().map_err(|error| {
+            format!(
+                "could not wait for `{}`: {error}",
+                program.to_string_lossy()
+            )
+        })?;
+        (status.code().unwrap_or(1), None, None)
+    };
+
+    Ok(RunMeasurement {
+        exit_code,
+        wall_seconds: start.elapsed().as_secs_f64(),
+        cpu_seconds,
+        max_rss_bytes,
+    })
+}
+
+#[cfg(unix)]
+fn wait_for_child(
+    child: std::process::Child,
+    measure_resources: bool,
+) -> Result<(i32, Option<f64>, Option<u64>), String> {
+    use std::os::unix::process::ExitStatusExt;
+
+    let pid = child.id() as libc::pid_t;
+    drop(child);
+    let mut status = 0;
+    // SAFETY: rusage is a C plain-data struct, and zero is valid for every field.
+    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+    loop {
+        // SAFETY: status and usage are valid writable pointers, and pid is the spawned child.
+        let result = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+        if result == pid {
+            break;
+        }
+        if result == -1 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {
+            continue;
+        }
+        return Err(format!(
+            "could not wait for process {pid}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    let status = std::process::ExitStatus::from_raw(status);
+    let exit_code = status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1);
+    let (cpu_seconds, max_rss_bytes) = if measure_resources {
+        let user = usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 / 1_000_000.0;
+        let system = usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 / 1_000_000.0;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let max_rss = usage.ru_maxrss as u64;
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        let max_rss = (usage.ru_maxrss as u64).saturating_mul(1024);
+        (Some(user + system), Some(max_rss))
+    } else {
+        (None, None)
+    };
+
+    Ok((exit_code, cpu_seconds, max_rss_bytes))
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(error) = validate_cli(&cli) {
         eprintln!("configuration error: {error}");
         std::process::exit(2);
     }
-    eprintln!("command execution is not implemented yet");
-    std::process::exit(2);
+    match &cli.command {
+        Command::Run(args) => match run_command(args) {
+            Ok(measurement) => std::process::exit(measurement.exit_code),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(127);
+            }
+        },
+        Command::Push(_) => {
+            eprintln!("push client is not implemented yet");
+            std::process::exit(2);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -360,5 +468,80 @@ mod tests {
     fn validates_positive_retry_settings() {
         assert!(positive_seconds("0").is_err());
         assert_eq!(positive_seconds("3").unwrap(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn records_exit_code_and_resource_measurements() {
+        let args = RunArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".to_owned()),
+                bearer_token: Some("token".to_owned()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "job".to_owned(),
+            measure_resources: true,
+            command: vec!["sh".into(), "-c".into(), "exit 7".into()],
+        };
+        let measurement = run_command(&args).expect("command should run");
+        assert_eq!(measurement.exit_code, 7);
+        assert!(measurement.wall_seconds >= 0.0);
+        assert!(measurement.cpu_seconds.is_some());
+        assert!(measurement.max_rss_bytes.is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn maps_signal_termination_to_shell_status() {
+        let args = RunArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".to_owned()),
+                bearer_token: Some("token".to_owned()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "job".to_owned(),
+            measure_resources: false,
+            command: vec!["sh".into(), "-c".into(), "kill -TERM $$".into()],
+        };
+        assert_eq!(
+            run_command(&args).expect("command should run").exit_code,
+            143
+        );
+    }
+
+    #[test]
+    fn reports_spawn_failures_with_the_command_name() {
+        let args = RunArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".to_owned()),
+                bearer_token: Some("token".to_owned()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "job".to_owned(),
+            measure_resources: false,
+            command: vec!["definitely-not-a-real-command".into()],
+        };
+        let error = run_command(&args).expect_err("missing command should fail");
+        assert!(error.contains("definitely-not-a-real-command"));
+    }
+
+    #[test]
+    fn clap_requires_run_name_and_command() {
+        assert!(Cli::try_parse_from(["autoangel", "run", "--name", "job", "--"]).is_err());
+        assert!(Cli::try_parse_from(["autoangel", "run", "--", "true"]).is_err());
+    }
+
+    #[test]
+    fn clap_command_factory_is_valid() {
+        Cli::command().debug_assert();
     }
 }
