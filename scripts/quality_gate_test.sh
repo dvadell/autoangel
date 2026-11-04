@@ -33,4 +33,9 @@ for command in \
   fi
 done
 
+if ! grep -Fqx "$root/scripts/rust_safety_checks.sh" <<<"$output"; then
+  printf 'quality gate is missing command: %s\n' "$root/scripts/rust_safety_checks.sh" >&2
+  exit 1
+fi
+
 printf 'quality gate command matrix is complete\n'

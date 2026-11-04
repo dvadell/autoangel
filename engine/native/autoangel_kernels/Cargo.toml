@@ -1,0 +1,16 @@
+[package]
+name = "autoangel-kernels"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = []
+nif = ["dep:rustler"]
+test-panic = []
+
+[dependencies]
+rustler = { version = "0.36", optional = true }

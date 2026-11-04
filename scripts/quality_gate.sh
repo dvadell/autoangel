@@ -42,6 +42,7 @@ run_rust_checks() {
     run cargo clippy --workspace --all-targets --all-features -- -D warnings
     run cargo test --workspace --all-features
     run cargo audit
+    run "$root/scripts/rust_safety_checks.sh"
   )
 }
 

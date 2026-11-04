@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["cli"]
+members = ["cli", "engine/native/autoangel_kernels"]
 
 [profile.release]
 panic = "unwind"
