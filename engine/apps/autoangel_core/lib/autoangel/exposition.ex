@@ -4,7 +4,7 @@ defmodule Autoangel.Exposition do
   defmodule Sample do
     @moduledoc "A single Prometheus exposition sample."
     @type t :: %__MODULE__{}
-    defstruct name: nil, labels: %{}, value: nil, timestamp: nil, type_hint: nil
+    defstruct name: nil, labels: %{}, value: nil, timestamp: nil, type_hint: nil, series_kind: nil
   end
 
   defmodule Family do
@@ -81,7 +81,14 @@ defmodule Autoangel.Exposition do
           name: name,
           help: Map.get(meta, :help),
           type: hint,
-          samples: Enum.map(parsed_samples, &%{&1 | type_hint: hint_for_sample(hint, &1)})
+          samples:
+            Enum.map(parsed_samples, fn sample ->
+              %{
+                sample
+                | type_hint: hint_for_sample(hint, sample),
+                  series_kind: kind_for_sample(sample, hint)
+              }
+            end)
         }
       end)
 
@@ -308,7 +315,12 @@ defmodule Autoangel.Exposition do
   defp add_child_families(acc, _family, _type), do: acc
 
   defp hint_for_sample(nil, _sample), do: nil
+
   defp hint_for_sample(type, _sample), do: type
+
+  defp kind_for_sample(%Sample{} = sample, type) do
+    Autoangel.SeriesKind.infer(sample.name, type, sample.labels)
+  end
 
   defp unescape_help(text) do
     case unescape(text) do
