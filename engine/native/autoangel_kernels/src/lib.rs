@@ -14,8 +14,8 @@ pub mod kernel {
     /// Names of kernels promoted by the M0 benchmark.
     ///
     /// This must remain empty while the Elixir implementations are selected.
-    /// A future promotion must add the Rust implementation and its determinism
-    /// property test in the same change.
+    /// A future promotion must add the Rust implementation, score-bounds and
+    /// determinism properties, and state round-trip coverage in the same change.
     pub const PROMOTED_KERNELS: &[&str] = &[];
 }
 
@@ -68,6 +68,25 @@ mod tests {
             prop_assert!(
                 crate::kernel::PROMOTED_KERNELS.is_empty(),
                 "a promoted kernel requires a Rust determinism property test"
+            );
+        }
+    }
+
+    // **Validates: Requirements 49.2**
+    // Property 42: Checkpoint round trip (Rust mirror).
+    // The shared state contract is implemented by Autoangel.Kernel.State in
+    // Elixir while M0 selects no Rust kernel. Keep this property as a guard so
+    // a future promotion cannot omit Rust state encode/decode coverage. It
+    // must be replaced with generated valid shared-contract states and an
+    // encode/decode round trip before PROMOTED_KERNELS becomes non-empty.
+    proptest! {
+        #[test]
+        fn state_round_trip_property_is_skipped_without_promoted_kernels(
+            _state_seed in any::<u64>()
+        ) {
+            prop_assert!(
+                crate::kernel::PROMOTED_KERNELS.is_empty(),
+                "a promoted kernel requires Rust state encode/decode coverage"
             );
         }
     }

@@ -32,6 +32,8 @@ Dependency status: The engine/native crate exists, but Rustler is unavailable in
 
 Task 4.3 (Rust score-bounds property) is intentionally skipped because this gate promoted no kernels. The native crate keeps an explicit empty promotion registry and a guard test; if a future M0 gate promotes a kernel, the Rust mirror property must be added for that kernel before the registry is populated.
 
+Task 4.5 (Rust state encode/decode round-trip property) is intentionally guarded rather than implemented because this gate promoted no kernels and the Rust crate has no state codec. The Elixir reference state contract remains covered by `Autoangel.Kernel.State`; a future Rust promotion must add shared-contract round-trip coverage before the promotion registry is populated.
+
 Compile-time selection: `Autoangel.Kernel.Selected` is fixed to `:elixir` while the M0 promotion set is empty. It delegates to `Autoangel.Kernel.Scoring.Elixir` and does not load or call a Rust kernel. A future promotion must change this selector together with the Rust implementation, shared state-encoding coverage, and NIF boundary tests.
 
 ## Provisional defaults
