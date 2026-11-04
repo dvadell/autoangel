@@ -168,6 +168,57 @@ defmodule Autoangel.Kernel.ScoringTest do
       else: (Enum.at(sorted, middle - 1) + Enum.at(sorted, middle)) / 2
   end
 
+  # **Validates: Requirements 9.3, 9.6, 9.7**
+  property "Feature: v1, Property 14: zero exactly at the median" do
+    check all(
+            values <-
+              one_of([
+                nonempty(list_of(integer(-1_000..1_000), max_length: 32)),
+                map(tuple({integer(-1_000..1_000), integer(1..32)}), fn {value, count} ->
+                  List.duplicate(value, count)
+                end)
+              ]),
+            side <- member_of([1, -1]),
+            delta <- integer(1..1_000),
+            empty_value <- integer(-1_000..1_000)
+          ) do
+      values = Enum.map(values, &(&1 * 1.0))
+      median = property_13_median(values)
+      off_median = median + side * delta
+
+      baseline_samples =
+        Enum.with_index(values, 1)
+        |> Enum.map(fn {value, index} -> {index * 1_000, value, :gauge} end)
+
+      assert {:ok, baseline_state, _results} =
+               ScoringElixir.score(initial_state(), baseline_samples)
+
+      candidate_timestamp = (length(values) + 1) * 1_000
+
+      assert {:ok, _median_state, [median_result]} =
+               ScoringElixir.score(baseline_state, [{candidate_timestamp, median, :gauge}])
+
+      assert median_result.score == 0.0
+      assert median_result.observed == median
+      assert median_result.baseline_type == :robust
+
+      assert {:ok, _off_median_state, [off_median_result]} =
+               ScoringElixir.score(baseline_state, [{candidate_timestamp, off_median, :gauge}])
+
+      assert off_median_result.score > 0.0
+
+      assert {:ok, empty_state, [first_result]} =
+               ScoringElixir.score(initial_state(), [{1_000, empty_value * 1.0, :gauge}])
+
+      assert first_result.score == 0.0
+      assert first_result.observed == empty_value * 1.0
+      assert first_result.lower == empty_value * 1.0
+      assert first_result.upper == empty_value * 1.0
+      assert {:ok, decoded} = State.decode(empty_state)
+      assert decoded.window == [empty_value * 1.0]
+    end
+  end
+
   # **Validates: Requirements 6.1, 6.3, 6.4**
   property "Feature: v1, Property 10: Typical_Interval comes only from positive spacings" do
     check all(
