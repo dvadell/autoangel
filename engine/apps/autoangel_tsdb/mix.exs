@@ -11,13 +11,18 @@ defmodule AutoangelTsdb.MixProject do
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      dialyzer: [plt_add_apps: [:mix], flags: [:error_handling, :underspecs]]
     ]
   end
 
   def application, do: [extra_applications: [:logger]]
 
   defp deps do
-    [{:stream_data, "~> 1.1", only: [:dev, :test]}]
+    [
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
+      {:stream_data, "~> 1.1", only: [:dev, :test]}
+    ]
   end
 end
