@@ -173,4 +173,30 @@ defmodule Autoangel.Kernel.ScoringTest do
     assert {:error, :invalid_samples} = ScoringElixir.score(initial_state(), [{1, 2}])
     assert {:error, :invalid_params} = ScoringElixir.score(initial_state(), [], %{window_size: 0})
   end
+
+  # **Validates: Requirements 9.4, 12.3, 13.1, 17.1, 17.2**
+  property "Feature: v1, Property 12: scores are bounded and always explained" do
+    check all(values <- nonempty(list_of(integer(-1_000..1_000), max_length: 100))) do
+      samples =
+        values
+        |> Enum.with_index(1)
+        |> Enum.map(fn {value, index} -> {index * 1_000, value * 1.0, :gauge} end)
+
+      assert {:ok, _state, results} = ScoringElixir.score(initial_state(), samples)
+      assert length(results) == length(samples)
+
+      Enum.each(results, fn result ->
+        assert is_float(result.score)
+        assert result.score >= 0.0 and result.score <= 100.0
+        assert is_float(result.observed)
+        assert is_float(result.lower) and is_float(result.upper)
+        assert result.lower == result.lower
+        assert result.upper == result.upper
+        assert abs(result.lower) <= 1.797_693_134_862_315_7e308
+        assert abs(result.upper) <= 1.797_693_134_862_315_7e308
+        assert result.lower <= result.upper
+        assert result.baseline_type == :robust
+      end)
+    end
+  end
 end
