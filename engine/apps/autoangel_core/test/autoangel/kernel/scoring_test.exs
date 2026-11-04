@@ -385,6 +385,46 @@ defmodule Autoangel.Kernel.ScoringTest do
     assert {:error, :invalid_params} = ScoringElixir.score(initial_state(), [], %{window_size: 0})
   end
 
+  # **Validates: Requirements 47.6, 49.2**
+  property "Feature: v1, Property 46: kernel calls are deterministic" do
+    check all(
+            {state_bin, samples} <-
+              map(
+                tuple({
+                  list_of(integer(-1_000..1_000), max_length: 8),
+                  integer(-1_000_000..1_000_000),
+                  list_of(integer(1..1_000), max_length: 16),
+                  list_of(
+                    tuple({
+                      integer(-1_000_000..1_000_000),
+                      integer(-1_000..1_000),
+                      member_of([:gauge, :counter])
+                    }),
+                    max_length: 32
+                  )
+                }),
+                fn {window, previous_timestamp, spacing, samples} ->
+                  capacity = max(length(window), 1)
+
+                  state =
+                    State.new(
+                      capacity: capacity,
+                      window: Enum.map(window, &(&1 * 1.0)),
+                      prev: {previous_timestamp, 0.0},
+                      spacing: Enum.take(spacing, 16)
+                    )
+
+                  {State.encode(state), samples}
+                end
+              )
+          ) do
+      assert {:ok, first_state, first_results} = ScoringElixir.score(state_bin, samples)
+      assert {:ok, second_state, second_results} = ScoringElixir.score(state_bin, samples)
+      assert first_state === second_state
+      assert first_results === second_results
+    end
+  end
+
   # **Validates: Requirements 9.4, 12.3, 13.1, 17.1, 17.2**
   property "Feature: v1, Property 12: scores are bounded and always explained" do
     check all(values <- nonempty(list_of(integer(-1_000..1_000), max_length: 100))) do
