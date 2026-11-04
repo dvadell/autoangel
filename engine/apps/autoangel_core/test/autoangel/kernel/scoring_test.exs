@@ -219,6 +219,47 @@ defmodule Autoangel.Kernel.ScoringTest do
     end
   end
 
+  # **Validates: Requirements 9.8, 17.3**
+  property "Feature: v1, Property 15: non-finite values change nothing" do
+    check all(
+            finite_samples <-
+              list_of(
+                tuple({integer(-1_000_000..1_000_000), integer(-1_000..1_000)}),
+                max_length: 32
+              ),
+            non_finite <- member_of([:nan, :inf, :neg_inf]),
+            kind <- member_of([:gauge, :counter]),
+            non_finite_kind <- member_of([:gauge, :counter]),
+            window_size <- integer(1..32),
+            non_finite_timestamp <- integer(-1_000_000..1_000_000)
+          ) do
+      baseline_samples =
+        Enum.map(finite_samples, fn {timestamp, value} ->
+          {timestamp, value, kind}
+        end)
+
+      params = %Params{window_size: window_size}
+
+      assert {:ok, baseline_state, _results} =
+               ScoringElixir.score(initial_state(), baseline_samples, params)
+
+      assert {:ok, unchanged_state, [result]} =
+               ScoringElixir.score(
+                 baseline_state,
+                 [{non_finite_timestamp, non_finite, non_finite_kind}],
+                 params
+               )
+
+      assert unchanged_state == baseline_state
+      assert result.ts == non_finite_timestamp
+      assert result.score == nil
+      assert result.observed == nil
+      assert result.lower == nil
+      assert result.upper == nil
+      assert result.baseline_type == nil
+    end
+  end
+
   # **Validates: Requirements 6.1, 6.3, 6.4**
   property "Feature: v1, Property 10: Typical_Interval comes only from positive spacings" do
     check all(
