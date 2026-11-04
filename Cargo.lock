@@ -65,6 +65,7 @@ dependencies = [
 name = "autoangel-kernels"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "rustler",
 ]
 

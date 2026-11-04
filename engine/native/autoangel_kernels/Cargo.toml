@@ -14,3 +14,6 @@ test-panic = []
 
 [dependencies]
 rustler = { version = "0.36", optional = true }
+
+[dev-dependencies]
+proptest = "1"
