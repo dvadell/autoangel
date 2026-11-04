@@ -11,7 +11,24 @@ The M0 storage benchmark results and the decision on checkpoint and TimescaleDB 
 
 ## NIF gate
 
-The M0 NIF benchmark results will determine which numeric kernels, if any, move from the Elixir reference implementation to Rust NIFs. The selected implementation and measured limits will be recorded here.
+### NIF gate benchmark (2026-11-04T22:13:40.836644Z)
+
+Machine: 2 BEAM schedulers, 16331076 kB host memory.
+Workload: warmed Elixir scoring kernel, 20000 Series, batch sizes 1, 2, 4, 8, 16, 32, 64, 128, 256.
+Throughput gate: 2000 Samples/s (20,000 Series at one sample per 10 seconds).
+- batch 1: 9271.82 Samples/s, 107.854 us/call average, 790.0 us max, 644.0 us p99 (2157073 us total)
+- batch 2: 13802.07 Samples/s, 144.906 us/call average, 703.0 us max, 650.0 us p99 (2898117 us total)
+- batch 4: 18432.44 Samples/s, 217.009 us/call average, 1342.0 us max, 939.0 us p99 (4340175 us total)
+- batch 8: 21645.01 Samples/s, 369.6 us/call average, 800.0 us max, 741.0 us p99 (7392003 us total)
+- batch 16: 22820.64 Samples/s, 701.12 us/call average, 1391.0 us max, 1357.0 us p99 (14022391 us total)
+- batch 32: 23685.95 Samples/s, 1351.012 us/call average, 1975.0 us max, 1794.0 us p99 (27020236 us total)
+- batch 64: 23939.48 Samples/s, 2673.408 us/call average, 2462.0 us max, 2452.0 us p99 (53468152 us total)
+- batch 128: 24134.07 Samples/s, 5303.706 us/call average, 4654.0 us max, 4650.0 us p99 (106074125 us total)
+- batch 256: 23999.21 Samples/s, 10667.017 us/call average, 9463.0 us max, 9013.0 us p99 (213340340 us total)
+Memory: 4295.0 encoded-state bytes/Series (85900000 bytes for 20000 full-window states); BEAM term reference overhead 64.0 bytes/Series. No independent memory promotion target is defined by the requirements.
+Exposition parsing CPU share: 4.96% (116 ms parsing, 2225 ms scoring, 20000 Samples).
+Decision: selected elixir; promoted kernels: none; final maximum batch size 2; Elixir call duration target 1000 us at maximum batch size. Duration target met by maximum observed call: true. Throughput target met: true. Elixir scoring met the 2,000 Samples/s throughput gate and remains selected; no kernel is promoted to Rust. Calls above 1 ms require dirty scheduling or chunking under Requirement 47.3.
+Dependency status: The engine/native crate exists, but Rustler is unavailable in the current Mix environment; only the Elixir reference kernel was measured.
 
 ## Provisional defaults
 
