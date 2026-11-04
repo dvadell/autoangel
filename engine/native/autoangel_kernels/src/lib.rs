@@ -72,6 +72,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn golden_fixture_policy_is_guarded_without_promoted_kernels() {
+        const GOLDEN_POLICY: &str = include_str!("../tests/data/README.md");
+
+        assert!(crate::kernel::PROMOTED_KERNELS.is_empty());
+        assert!(GOLDEN_POLICY.contains("anomaly scores: absolute deviation"));
+        assert!(GOLDEN_POLICY.contains("expected-range bounds: relative deviation"));
+        assert!(GOLDEN_POLICY.contains("kernel, dataset path"));
+    }
+
     // **Validates: Requirements 49.2**
     // Property 42: Checkpoint round trip (Rust mirror).
     // The shared state contract is implemented by Autoangel.Kernel.State in
