@@ -48,3 +48,45 @@ defmodule Autoangel.Kernel.StateTest do
     assert {:error, :bad_state} = State.decode(:not_binary)
   end
 end
+
+defmodule Autoangel.Kernel.StateMalformedPropertyTest do
+  use ExUnit.Case, async: true
+  use ExUnitProperties
+
+  alias Autoangel.Kernel.State
+
+  property "Feature: v1, Property 48: malformed state is an error, not a crash" do
+    # **Validates: Requirements 47.10**
+    valid_state = State.encode(State.new())
+
+    check all(malformed <- malformed_state_generator(valid_state), max_runs: 100) do
+      assert {:error, :bad_state} = State.decode(malformed)
+      assert Process.alive?(self())
+    end
+  end
+
+  defp malformed_state_generator(valid_state) do
+    size = byte_size(valid_state)
+
+    one_of([
+      map(binary(min_length: 0, max_length: 1_024), &<<"not-a-state", &1::binary>>),
+      map(integer(0..(size - 1)), &binary_part(valid_state, 0, &1)),
+      map(integer(0..(size - 1)), fn index ->
+        <<prefix::binary-size(^index), byte, suffix::binary>> = valid_state
+        <<prefix::binary, Bitwise.bxor(byte, 1), suffix::binary>>
+      end),
+      map(filter(integer(0..65_535), &(&1 != 1)), fn version ->
+        <<prefix::binary-size(5), _old_version::little-unsigned-16, rest::binary>> = valid_state
+        suffix = binary_part(rest, 0, byte_size(rest) - 4)
+        body = <<prefix::binary, version::little-unsigned-16, suffix::binary>>
+        body <> <<:erlang.crc32(body)::little-unsigned-32>>
+      end),
+      map(integer(0..7), fn bit ->
+        <<body::binary-size(^size - 4), crc::binary-size(4)>> = valid_state
+
+        <<body::binary, Bitwise.bxor(:binary.at(crc, 0), Bitwise.bsl(1, bit)),
+          binary_part(crc, 1, 3)::binary>>
+      end)
+    ])
+  end
+end
