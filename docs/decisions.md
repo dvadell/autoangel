@@ -30,6 +30,8 @@ Exposition parsing CPU share: 4.96% (116 ms parsing, 2225 ms scoring, 20000 Samp
 Decision: selected elixir; promoted kernels: none; final maximum batch size 2; Elixir call duration target 1000 us at maximum batch size. Duration target met by maximum observed call: true. Throughput target met: true. Elixir scoring met the 2,000 Samples/s throughput gate and remains selected; no kernel is promoted to Rust. Calls above 1 ms require dirty scheduling or chunking under Requirement 47.3.
 Dependency status: The engine/native crate exists, but Rustler is unavailable in the current Mix environment; only the Elixir reference kernel was measured.
 
+Compile-time selection: `Autoangel.Kernel.Selected` is fixed to `:elixir` while the M0 promotion set is empty. It delegates to `Autoangel.Kernel.Scoring.Elixir` and does not load or call a Rust kernel. A future promotion must change this selector together with the Rust implementation, shared state-encoding coverage, and NIF boundary tests.
+
 ## Provisional defaults
 
 Defaults marked provisional in the design remain subject to the M0 benchmark. Changes and their measured rationale will be recorded here.

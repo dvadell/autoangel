@@ -2,7 +2,7 @@ defmodule Autoangel.Kernel.ScoringTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Autoangel.Kernel.{Params, State}
+  alias Autoangel.Kernel.{Params, Selected, State}
   alias Autoangel.Kernel.Scoring.Elixir, as: ScoringElixir
 
   defp initial_state, do: State.encode(State.new())
@@ -541,5 +541,12 @@ defmodule Autoangel.Kernel.ScoringTest do
         assert result.baseline_type == :robust
       end)
     end
+  end
+
+  test "uses the Elixir implementation when M0 promotes no kernels" do
+    assert Selected.implementation() == :elixir
+
+    assert Selected.score(initial_state(), [{1_000, 10.0, :gauge}]) ==
+             ScoringElixir.score(initial_state(), [{1_000, 10.0, :gauge}])
   end
 end
