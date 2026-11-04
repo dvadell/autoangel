@@ -200,3 +200,82 @@ defmodule Autoangel.Kernel.ScoringTest do
     end
   end
 end
+  # **Validates: Requirements 6.1, 6.3, 6.4**
+  property "Feature: v1, Property 10: Typical_Interval comes only from positive spacings" do
+    check all(
+            start <- integer(-1_000_000..1_000_000),
+            positive_samples <-
+              list_of(
+                tuple({integer(1..1_000), integer(-1_000..1_000)}),
+                min_length: 18,
+                max_length: 50
+              ),
+            nonpositive_samples <-
+              list_of(
+                tuple({integer(-1_000..0), integer(-1_000..1_000)}),
+                min_length: 1,
+                max_length: 20
+              )
+          ) do
+      steps = positive_samples ++ nonpositive_samples
+
+      {samples, _timestamp} =
+        Enum.map_reduce(steps, start, fn {step, value}, timestamp ->
+          timestamp = timestamp + step
+          {{timestamp, value, :gauge}, timestamp}
+        end)
+
+      assert {:ok, _state, results} = ScoringElixir.score(initial_state(), samples)
+      assert length(results) == length(samples)
+      assert Enum.map(results, & &1.observed) == Enum.map(samples, &(elem(&1, 1) * 1.0))
+
+      {expected, _final_state} =
+        Enum.map_reduce(samples, {nil, []}, fn {timestamp, _value, _kind}, {previous, spacings} ->
+          spacing =
+            case previous do
+              {previous_timestamp, _} when timestamp > previous_timestamp ->
+                timestamp - previous_timestamp
+
+              _ ->
+                nil
+            end
+
+          spacings =
+            if spacing do
+              Enum.take((spacings ++ [spacing]) |> Enum.reverse(), 16) |> Enum.reverse()
+            else
+              spacings
+            end
+
+          typical =
+            case Enum.sort(spacings) do
+              [] ->
+                nil
+
+              sorted when rem(length(sorted), 2) == 1 ->
+                Enum.at(sorted, div(length(sorted), 2))
+
+              sorted ->
+                middle = div(length(sorted), 2)
+                left = Enum.at(sorted, middle - 1)
+                right = Enum.at(sorted, middle)
+                left + div(right - left, 2)
+            end
+
+          next_previous =
+            case previous do
+              nil -> {timestamp, 0}
+              {previous_timestamp, _} when timestamp > previous_timestamp -> {timestamp, 0}
+              previous -> previous
+            end
+
+          {{typical, spacing != nil}, {next_previous, spacings}}
+        end)
+
+      {expected_intervals, expected_spacing_ok} =
+        Enum.unzip(expected)
+
+      assert Enum.map(results, & &1.typical_interval_ms) == expected_intervals
+      assert Enum.map(results, & &1.spacing_ok?) == expected_spacing_ok
+    end
+  end
