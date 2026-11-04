@@ -2,6 +2,8 @@
 
 ## Storage gate
 
+- CubDB checkpoint (20000 Series, 4500 byte state): write 2249.613 ms, restore 349.488 ms, replacement 7277.94 ms, on-disk size 600578091 bytes (restored 20000 entries).
+
 The M0 storage benchmark results and the decision on checkpoint and TimescaleDB write paths will be recorded here.
 
 ## NIF gate
