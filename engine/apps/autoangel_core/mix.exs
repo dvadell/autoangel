@@ -24,7 +24,8 @@ defmodule AutoangelCore.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
-      {:cubdb, "~> 2.0"}
+      {:cubdb, "~> 2.0"},
+      {:plug, "~> 1.16"}
     ]
   end
 end
