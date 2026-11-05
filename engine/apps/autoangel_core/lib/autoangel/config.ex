@@ -22,7 +22,8 @@ defmodule Autoangel.Config do
     control_api: %{token: nil, username: nil, password: nil},
     http: %{ingest_port: 9_400, control_port: 9_401},
     tls: %{cert_file: nil, key_file: nil},
-    auth_exemptions: []
+    auth_exemptions: [],
+    plugins: %{}
   }
 
   @secret_paths [
@@ -40,9 +41,11 @@ defmodule Autoangel.Config do
          config <- merge(@defaults, atomize_keys(parsed)),
          config <- normalize_config(config),
          config <- safe_apply_secret_env(config, env),
-         errors <- validate(config) do
+         plugin_result <- Autoangel.Plugin.Registry.validate(config),
+         errors <- validate(config, plugin_result) do
       if errors == [] do
-        config = redact_secrets(config)
+        {:ok, plugins} = plugin_result
+        config = config |> Map.put(:enabled_plugins, plugins) |> redact_secrets()
         install_filter(config)
         {:ok, config}
       else
@@ -278,7 +281,7 @@ defmodule Autoangel.Config do
 
   defp normalize_auth_exemptions(config), do: config
 
-  defp validate(config) when is_map(config) do
+  defp validate(config, plugin_result) when is_map(config) do
     cardinality = section(config, :cardinality)
     learning = section(config, :learning)
     missing = section(config, :missing_data)
@@ -322,10 +325,12 @@ defmodule Autoangel.Config do
 
     Enum.flat_map(checks, fn {name, value, predicate} ->
       if predicate.(value), do: [], else: [name]
-    end)
+    end) ++ plugin_validation_errors(plugin_result)
   end
 
-  defp validate(_), do: [:configuration]
+  defp plugin_validation_errors({:ok, _enabled}), do: []
+  defp plugin_validation_errors({:error, errors}) when is_list(errors), do: errors
+
   defp section(config, key), do: if(is_map(config[key]), do: config[key], else: %{})
 
   defp valid_backend?(value), do: value in [:none, :timescaledb, "none", "timescaledb"]
