@@ -9,6 +9,8 @@ The M0 storage benchmark results and the decision on checkpoint and TimescaleDB 
 - TimescaleDB write benchmark implementation: `mix autoangel.benchmark_timescaledb` in `engine`, using `AUTOANGEL_TSDB_URL`. It generates 20,000 Series with six Samples each at deterministic 10 s to 60 s intervals, writes 5,000-row batches, and records Samples/s, client write round trips per batch, elapsed time, host memory, logical CPU count and the client filesystem disk type after a successful run. The round-trip figure counts Postgrex write operations, not wire-level protocol exchanges. `--fallback` measures the parameterized multi-row INSERT path.
 - This environment has 2 CPU schedulers and 16,331,076 kB host memory; the database benchmark was not run because `AUTOANGEL_TSDB_URL` is not configured, so no Samples/s or disk result is claimed.
 
+The TimescaleDB benchmark remains blocked in this environment. A Docker Compose service and initialization schema are provided in `compose.yml` and `docker/timescaledb/init.sql`; starting the service with `sudo -n docker compose up -d --wait` failed while pulling `timescale/timescaledb:2.17.2-pg16` because the Docker storage filesystem ran out of space. No Samples/s, elapsed time, or disk result is claimed. The M0 storage gate therefore remains an explicit checkpoint blocker until the image can start and `AUTOANGEL_TSDB_URL` can be benchmarked.
+
 ## NIF gate
 
 ### NIF gate benchmark (2026-11-04T22:13:40.836644Z)
@@ -39,3 +41,5 @@ Compile-time selection: `Autoangel.Kernel.Selected` is fixed to `:elixir` while 
 ## Provisional defaults
 
 Defaults marked provisional in the design remain subject to the M0 benchmark. Changes and their measured rationale will be recorded here.
+
+The measured NIF gate fixes the maximum Elixir batch size at 2 Samples and retains a 1 ms call-duration target. The M0 decision is recorded in the design defaults; no Rust kernel is promoted.
