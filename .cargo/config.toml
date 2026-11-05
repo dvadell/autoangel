@@ -1,0 +1,12 @@
+# Keep release CLI artifacts self-contained on both supported musl architectures.
+# The cross-linkers are supplied by the pinned build environment documented in
+# scripts/build_cli_static.sh; using an explicit linker prevents accidental
+# fallback to the host glibc toolchain.
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
