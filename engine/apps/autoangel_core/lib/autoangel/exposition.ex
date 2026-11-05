@@ -11,7 +11,8 @@ defmodule Autoangel.Exposition do
               type_hint: nil,
               series_kind: nil,
               source: nil,
-              received_at: nil
+              received_at: nil,
+              batch_uuid: nil
   end
 
   defmodule Family do
