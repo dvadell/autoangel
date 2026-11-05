@@ -54,8 +54,36 @@ defmodule Autoangel.Workers.Worker do
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
 
   def enqueue(pid, samples), do: GenServer.cast(pid, {:samples, samples})
+
+  @spec try_reserve(non_neg_integer(), non_neg_integer(), pos_integer()) :: :ok | {:error, :full}
+  def try_reserve(index, count, capacity)
+      when is_integer(index) and index >= 0 and is_integer(count) and count >= 0 and
+             is_integer(capacity) and capacity > 0 do
+    case queue_counter(index) do
+      nil ->
+        :ok
+
+      counter ->
+        limit = :persistent_term.get({__MODULE__, :capacity, index}, capacity)
+        if reserve_counter(counter, count, limit), do: :ok, else: {:error, :full}
+    end
+  end
+
+  @doc "Releases capacity previously reserved for a Worker queue."
+  @spec release_reserved(non_neg_integer(), non_neg_integer()) :: :ok
+  def release_reserved(index, count) when is_integer(index) and count >= 0 do
+    case queue_counter(index) do
+      nil -> :ok
+      counter -> decrement(counter, count)
+    end
+
+    :ok
+  end
+
+  @spec queue_counter(non_neg_integer()) :: :atomics.atomics_ref() | nil
+  def queue_counter(index), do: :persistent_term.get({__MODULE__, index}, nil)
+
   def reserve(pid, count), do: GenServer.call(pid, {:reserve, count})
-  def queue_counter(index), do: :persistent_term.get({__MODULE__, index})
   def release(pid, count), do: GenServer.cast(pid, {:release, count})
   def snapshot(pid), do: GenServer.call(pid, :snapshot)
 
@@ -82,6 +110,7 @@ defmodule Autoangel.Workers.Worker do
     }
 
     :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
+    :persistent_term.put({__MODULE__, :capacity, state.index}, state.queue_capacity)
     {:ok, restore_entries(schedule_sweep(state))}
   end
 
