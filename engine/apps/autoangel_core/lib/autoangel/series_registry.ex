@@ -82,6 +82,7 @@ defmodule Autoangel.SeriesRegistry do
       keys = :ets.new(:autoangel_series_keys, [:set, :protected])
       metric_counts = :ets.new(:autoangel_series_metric_counts, [:set, :protected])
       warnings = :ets.new(:autoangel_series_warning_rate, [:set, :protected])
+      Autoangel.Metrics.set(:series_count, 0)
 
       {:ok,
        %{
@@ -137,6 +138,7 @@ defmodule Autoangel.SeriesRegistry do
 
         if :ets.insert_new(state.keys, {key, reference(key, type_hint, state)}) do
           [{^key, reference}] = :ets.lookup(state.keys, key)
+          Autoangel.Metrics.set(:series_count, :atomics.get(state.total, 1))
           {:reply, {:created, reference}, state}
         else
           :atomics.add(metric_counter, 1, -1)
@@ -187,6 +189,7 @@ defmodule Autoangel.SeriesRegistry do
   defp reject(metric, limit, state) do
     position = if limit == :per_metric, do: 1, else: 2
     :atomics.add(state.rejected, position, 1)
+    Autoangel.Metrics.increment({:rejected_series, limit})
     warn_rejection(metric, limit, state.warnings)
     {:reply, {:rejected, limit}, state}
   end

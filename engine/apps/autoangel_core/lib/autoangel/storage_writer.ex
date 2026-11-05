@@ -135,6 +135,8 @@ defmodule Autoangel.Storage.Writer do
       put_items(state.queue, state.size, state.capacity, kind, items)
 
     state = %{state | queue: queue, size: size} |> increment(:dropped, dropped)
+    if dropped > 0, do: Autoangel.Metrics.increment(:samples_dropped, dropped)
+    Autoangel.Metrics.set(:storage_queue_depth, size)
     notify_drops(state, dropped)
     notify(state, {:storage_enqueued, dropped == 0})
     state
@@ -245,6 +247,9 @@ defmodule Autoangel.Storage.Writer do
   defp finish_batch(state, :ok, _batch, queue, size, _uuid, _new_batch) do
     notify(state, :database_success)
 
+    Autoangel.Metrics.increment({:storage, :successful})
+    Autoangel.Metrics.set(:storage_queue_depth, size)
+
     state
     |> increment(:successful, 1)
     |> Map.merge(%{queue: queue, size: size, retry_ms: state.initial_retry_ms, retry_batch: nil})
@@ -255,6 +260,9 @@ defmodule Autoangel.Storage.Writer do
     notify(state, {:storage_retryable, reason, length(batch)})
     retry = min(max(state.retry_ms * 2, state.retry_ms + 1), state.max_retry_ms)
     timer = Process.send_after(self(), :write, state.retry_ms)
+
+    Autoangel.Metrics.increment({:storage, :retryable})
+    Autoangel.Metrics.set(:storage_queue_depth, size)
 
     state
     |> increment(:retryable, 1)
@@ -270,6 +278,9 @@ defmodule Autoangel.Storage.Writer do
   defp finish_batch(state, {:permanent, reason}, batch, queue, size, _uuid, _new_batch) do
     Logger.error("storage permanent failure: #{inspect(reason)}; dropping #{length(batch)} items")
     notify(state, {:storage_permanent, reason, length(batch)})
+
+    Autoangel.Metrics.increment({:storage, :permanent})
+    Autoangel.Metrics.set(:storage_queue_depth, size)
 
     state
     |> increment(:permanent, 1)

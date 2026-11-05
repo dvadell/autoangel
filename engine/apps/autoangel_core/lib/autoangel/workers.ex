@@ -246,8 +246,20 @@ defmodule Autoangel.Workers.Worker do
     tuples = Enum.map(samples, &kernel_sample(&1, series.kind))
     effective_kind = samples |> List.last() |> sample_kind(series.kind)
 
-    case score_kernel(series, tuples, state.kernel_params) do
+    started = System.monotonic_time(:microsecond)
+
+    result = score_kernel(series, tuples, state.kernel_params)
+    duration = System.monotonic_time(:microsecond) - started
+    Autoangel.Metrics.observe(:nif_call_duration_seconds, duration / 1_000_000)
+
+    case result do
       {:ok, kernel_state, results} ->
+        Enum.each(samples, fn sample ->
+          accepted = receive_time(sample, state)
+          latency = max(System.system_time(:millisecond) - accepted, 0) / 1_000
+          Autoangel.Metrics.observe(:detection_latency_seconds, latency)
+        end)
+
         meta =
           results
           |> Enum.zip(samples)

@@ -75,16 +75,19 @@ defmodule Autoangel.Ingest do
             enqueue_workers(accepted_by_worker, opts)
             enqueue_storage(accepted, opts)
             if accepted != [], do: notify_self_monitor(opts, :accepted_sample)
+            Autoangel.Metrics.increment(:ingest_samples_accepted, length(accepted))
             {:ok, %{accepted: length(accepted), rejected_cardinality: rejected}}
 
           {:error, _reason} ->
             release_all(reservations)
             Metrics.increment_load_shed(length(samples))
+            Autoangel.Metrics.increment(:samples_load_shed, length(samples))
             {:error, :overloaded}
         end
 
       :error ->
         Metrics.increment_load_shed(length(samples))
+        Autoangel.Metrics.increment(:samples_load_shed, length(samples))
         {:error, :overloaded}
     end
   end
