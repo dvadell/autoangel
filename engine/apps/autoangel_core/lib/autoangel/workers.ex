@@ -8,7 +8,7 @@ defmodule Autoangel.Workers do
   @impl Supervisor
   def init(opts) do
     size = Keyword.get(opts, :pool_size, System.schedulers_online())
-    worker_opts = Keyword.drop(opts, [:name, :pool_size])
+    worker_opts = Keyword.drop(opts, [:name, :pool_size, :queue_counter])
 
     children =
       for index <- 0..(max(size, 1) - 1) do
@@ -47,13 +47,15 @@ defmodule Autoangel.Workers.Worker do
             sweep_interval: 15_000,
             scrape_status_table: nil,
             now: nil,
-            state_store: nil
+            state_store: nil,
+            decision_cfg: %{}
 
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
 
   def enqueue(pid, samples), do: GenServer.cast(pid, {:samples, samples})
   def reserve(pid, count), do: GenServer.call(pid, {:reserve, count})
+  def queue_counter(index), do: :persistent_term.get({__MODULE__, index})
   def release(pid, count), do: GenServer.cast(pid, {:release, count})
   def snapshot(pid), do: GenServer.call(pid, :snapshot)
 
@@ -68,16 +70,18 @@ defmodule Autoangel.Workers.Worker do
 
     state = %__MODULE__{
       index: Keyword.get(opts, :index, 0),
-      queue_counter: Keyword.get(opts, :queue_counter),
+      queue_counter: Keyword.get(opts, :queue_counter) || :atomics.new(1, signed: true),
       queue_capacity: Keyword.get(opts, :queue_capacity, 20_000),
       max_batch: Keyword.get(opts, :max_batch, 2),
       kernel_params: Keyword.get(opts, :kernel_params, %Params{}),
       sweep_interval: interval,
       scrape_status_table: Keyword.get(opts, :scrape_status_table),
       now: Keyword.get(opts, :now, fn -> System.system_time(:millisecond) end),
-      state_store: Keyword.get(opts, :state_store)
+      state_store: Keyword.get(opts, :state_store),
+      decision_cfg: Keyword.get(opts, :decision_cfg, %{})
     }
 
+    :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
     {:ok, restore_entries(schedule_sweep(state))}
   end
 
@@ -93,7 +97,7 @@ defmodule Autoangel.Workers.Worker do
     series =
       Map.put(state.series, key, %{
         key: key,
-        kind: meta[:kind] || :gauge,
+        kind: Map.get(meta, :kind, :gauge) || :gauge,
         kernel_state: kernel_state,
         meta: meta
       })
@@ -121,6 +125,7 @@ defmodule Autoangel.Workers.Worker do
 
   def handle_cast({:samples, samples}, state) when is_list(samples) do
     decrement(state.queue_counter, length(samples))
+    samples = Enum.filter(samples, &valid_sample?/1)
     received_at = state.now.()
     samples = Enum.map(samples, &stamp_sample(&1, received_at))
 
@@ -133,16 +138,21 @@ defmodule Autoangel.Workers.Worker do
     {:noreply, process_pending(%{state | pending: pending})}
   end
 
+  def handle_cast(_message, state), do: {:noreply, state}
+
   @impl GenServer
   def handle_info(:sweep, state) do
     now = state.now.()
 
+    failing_targets = failing_targets(state.scrape_status_table)
+
     series =
       Enum.reduce(state.series, state.series, fn {key, series_state}, acc ->
-        cfg = %{
-          missing_data: %{multiple: 3.0},
-          failing_targets: failing_targets(state.scrape_status_table)
-        }
+        cfg =
+          Map.merge(state.decision_cfg, %{
+            missing_data: Map.get(state.decision_cfg, :missing_data, %{multiple: 3.0}),
+            failing_targets: failing_targets
+          })
 
         {meta, _events} = Decision.step(series_state.meta, :missing_sweep, now, cfg)
         Map.put(acc, key, %{series_state | meta: meta})
@@ -205,38 +215,47 @@ defmodule Autoangel.Workers.Worker do
 
   defp score_chunk(series, samples, state) do
     tuples = Enum.map(samples, &kernel_sample(&1, series.kind))
+    effective_kind = samples |> List.last() |> sample_kind(series.kind)
 
-    case Kernel.Selected.score(series.kernel_state, tuples, state.kernel_params) do
+    case score_kernel(series, tuples, state.kernel_params) do
       {:ok, kernel_state, results} ->
         meta =
           results
-          |> Enum.map(&Map.put(&1, :kind, series.kind))
           |> Enum.zip(samples)
+          |> Enum.map(fn {result, sample} ->
+            {Map.merge(result, %{
+               kind: sample_kind(sample, effective_kind),
+               source: sample_source(sample),
+               recv_ms: receive_time(sample, state)
+             }), sample}
+          end)
           |> Enum.reduce(series.meta, &apply_result(&1, &2, state))
 
         %{series | kernel_state: kernel_state, meta: meta}
 
       {:error, reason} ->
-        Logger.warning(
-          "resetting worker series #{inspect(series.key)} after kernel error: #{inspect(reason)}"
-        )
+        Logger.warning("kernel error for worker series #{inspect(series.key)}: #{inspect(reason)}")
 
-        new_series(series.key, %{
-          name: elem(series.key, 0),
-          labels: Map.new(elem(series.key, 1)),
-          value: 0,
-          timestamp: nil,
-          series_kind: series.kind
-        })
+        if reason == :invalid_samples do
+          series
+        else
+          %{series | kernel_state: State.encode(State.new(kind: series.kind))}
+        end
     end
   end
 
-  defp apply_result({result, sample}, meta, state) do
-    {updated, _events} =
-      Decision.step(meta, result, receive_time(sample, state), %{learning_duration: 86_400_000})
-
-    updated
+  defp score_kernel(series, tuples, params) do
+    Kernel.Selected.score(series.kernel_state, tuples, params)
+  rescue
+    exception -> {:error, {:kernel_exception, exception}}
+  catch
+    kind, reason -> {:error, {:kernel_throw, kind, reason}}
   end
+
+  defp apply_result({result, sample}, meta, state),
+    do: Decision.step(meta, result, receive_time(sample, state), decision_config(state)) |> elem(0)
+
+  defp decision_config(state), do: state.decision_cfg
 
   defp new_series(key, sample) do
     kind = sample_kind(sample)
@@ -249,19 +268,58 @@ defmodule Autoangel.Workers.Worker do
     }
   end
 
+  defp sample_kind(%Sample{series_kind: kind}, _fallback) when kind in [:gauge, :counter], do: kind
+  defp sample_kind(%{series_kind: kind}, _fallback) when kind in [:gauge, :counter], do: kind
+  defp sample_kind({_, _, _, kind}, _fallback) when kind in [:gauge, :counter], do: kind
+  defp sample_kind(_, fallback), do: fallback
+
   defp sample_kind(%Sample{series_kind: kind}) when kind in [:gauge, :counter], do: kind
   defp sample_kind(%{series_kind: kind}) when kind in [:gauge, :counter], do: kind
   defp sample_kind({_, _, _, kind}) when kind in [:gauge, :counter], do: kind
   defp sample_kind(_), do: :gauge
 
   defp stamp_sample(%Sample{timestamp: nil} = sample, timestamp),
-    do: %{sample | timestamp: timestamp}
+    do: %{sample | timestamp: timestamp, received_at: timestamp}
+
+  defp stamp_sample(%Sample{} = sample, received_at), do: %{sample | received_at: received_at}
 
   defp stamp_sample(%{timestamp: nil} = sample, timestamp),
-    do: Map.put(sample, :timestamp, timestamp)
+    do: Map.merge(sample, %{timestamp: timestamp, received_at: timestamp})
+
+  defp stamp_sample(%{} = sample, received_at), do: Map.put(sample, :received_at, received_at)
 
   defp stamp_sample({key, value, nil, kind}, timestamp), do: {key, value, timestamp, kind}
   defp stamp_sample(sample, _timestamp), do: sample
+
+  defp sample_source(%Sample{} = sample), do: Map.get(sample, :source)
+  defp sample_source(%{} = sample), do: Map.get(sample, :source)
+  defp sample_source(_), do: nil
+
+  defp valid_sample?(%Sample{name: name, labels: labels, value: value, timestamp: timestamp})
+       when is_binary(name) and (is_map(labels) or is_list(labels)) and
+              (is_number(value) or value in [:nan, :inf, :neg_inf]) and
+              (is_integer(timestamp) or is_nil(timestamp)),
+       do: true
+
+  defp valid_sample?(%Sample{}), do: false
+
+  defp valid_sample?(%{name: name, labels: labels, value: value, timestamp: timestamp})
+       when is_binary(name) and is_map(labels) and
+              (is_number(value) or value in [:nan, :inf, :neg_inf]) and
+              (is_integer(timestamp) or is_nil(timestamp)),
+       do: true
+
+  defp valid_sample?(%{name: name, labels: labels, value: value})
+       when is_binary(name) and is_map(labels) and
+              (is_number(value) or value in [:nan, :inf, :neg_inf]),
+       do: true
+
+  defp valid_sample?({{_name, _labels}, value, ts, kind})
+       when (is_number(value) or value in [:nan, :inf, :neg_inf]) and
+              (is_integer(ts) or is_nil(ts)) and kind in [:gauge, :counter, nil],
+       do: true
+
+  defp valid_sample?(_), do: false
 
   defp key(%Sample{name: name, labels: labels}),
     do: Autoangel.SeriesRegistry.canonical_key(name, labels)
@@ -272,6 +330,13 @@ defmodule Autoangel.Workers.Worker do
   defp timestamp(%{timestamp: ts}) when is_integer(ts), do: ts
   defp timestamp({_, _, ts, _}), do: ts
   defp timestamp(_), do: 0
+
+  defp receive_time(%Sample{received_at: received_at}, _state) when is_integer(received_at),
+    do: received_at
+
+  defp receive_time(%{received_at: received_at}, _state) when is_integer(received_at),
+    do: received_at
+
   defp receive_time(_sample, state), do: state.now.()
 
   defp kernel_sample(%Sample{timestamp: ts, value: value, series_kind: kind}, fallback),
@@ -280,6 +345,10 @@ defmodule Autoangel.Workers.Worker do
   defp kernel_sample(%{timestamp: ts, value: value, series_kind: kind}, fallback),
     do: {ts || System.system_time(:millisecond), value, kind || fallback}
 
+  defp kernel_sample(%{timestamp: ts, value: value}, fallback),
+    do: {ts || System.system_time(:millisecond), value, fallback}
+
+  defp kernel_sample({_, value, ts, nil}, fallback), do: {ts, value, fallback}
   defp kernel_sample({_, value, ts, kind}, _), do: {ts, value, kind}
 
   defp schedule_sweep(state),
@@ -309,5 +378,7 @@ defmodule Autoangel.Workers.Worker do
       {target, status}, acc -> Map.put(acc, target, status in [:failing, true])
       _, acc -> acc
     end)
+  catch
+    :error, :badarg -> %{}
   end
 end

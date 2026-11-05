@@ -4,7 +4,14 @@ defmodule Autoangel.Exposition do
   defmodule Sample do
     @moduledoc "A single Prometheus exposition sample."
     @type t :: %__MODULE__{}
-    defstruct name: nil, labels: %{}, value: nil, timestamp: nil, type_hint: nil, series_kind: nil
+    defstruct name: nil,
+              labels: %{},
+              value: nil,
+              timestamp: nil,
+              type_hint: nil,
+              series_kind: nil,
+              source: nil,
+              received_at: nil
   end
 
   defmodule Family do
