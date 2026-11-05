@@ -47,4 +47,21 @@ defmodule Autoangel.ConfigTest do
     report = %{msg: {:report, %{status: "ok"}}}
     assert Autoangel.LoggerSecretFilter.filter(report, ["secret"]) == report
   end
+
+  test "refuses multiple storage backends during startup validation" do
+    assert catch_exit(
+             Config.load(
+               ~S"""
+               [storage]
+               backend = "none"
+               backends = ["timescaledb", "timescaledb"]
+               """,
+               %{}
+             )
+           )
+  end
+
+  test "refuses a selected backend that lacks the storage callbacks" do
+    assert catch_exit(Config.load("[storage]\nbackend = \"timescaledb\"\n", %{}))
+  end
 end

@@ -323,6 +323,10 @@ defmodule Autoangel.Config do
 
   defp valid_backend?(value), do: value in [:none, :timescaledb, "none", "timescaledb"]
 
+  defp storage_selection_valid?(config) do
+    match?({:ok, _backend}, Autoangel.Storage.select_backend(config))
+  end
+
   defp distinct_credentials?(config) do
     ingest = section(config, :ingest)
     control = section(config, :control_api)
