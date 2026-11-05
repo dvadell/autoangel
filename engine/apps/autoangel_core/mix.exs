@@ -17,7 +17,9 @@ defmodule AutoangelCore.MixProject do
     ]
   end
 
-  def application, do: [extra_applications: [:logger]]
+  def application do
+    [mod: {Autoangel.Application, []}, extra_applications: [:logger, :inets]]
+  end
 
   defp deps do
     [

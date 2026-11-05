@@ -253,12 +253,3 @@ defmodule Autoangel.Metrics do
 
   defp started_at, do: :persistent_term.get(@started_at, System.monotonic_time(:millisecond))
 end
-
-defmodule Autoangel.Boot do
-  @moduledoc "Shared boot phase used by readiness checks."
-  @key {__MODULE__, :phase}
-
-  def set_phase(phase) when phase in [:starting, :ready], do: :persistent_term.put(@key, phase)
-  def phase, do: :persistent_term.get(@key, :starting)
-  def ready?, do: phase() == :ready
-end

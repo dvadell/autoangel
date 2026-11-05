@@ -22,7 +22,13 @@ defmodule Autoangel.HTTP.Listener do
          {:ok, ingest} <- listener_options(:ingest, config, tls),
          {:ok, control} <- listener_options(:control_api, config, tls),
          :ok <- distinct_ports(ingest, control) do
-      children = [bandit_child(ingest), bandit_child(control)]
+      children =
+        case Keyword.get(opts, :role) do
+          :control_api -> [bandit_child(control)]
+          :ingest -> [bandit_child(ingest)]
+          _ -> [bandit_child(ingest), bandit_child(control)]
+        end
+
       Supervisor.init(children, strategy: :one_for_one)
     else
       {:error, reason} ->
