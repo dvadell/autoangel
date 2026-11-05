@@ -50,6 +50,33 @@ defmodule Autoangel.StateStore do
   @spec get_record(GenServer.server(), term()) :: {:ok, term()} | :not_found | {:error, term()}
   def get_record(server \\ __MODULE__, key), do: GenServer.call(server, {:get, key})
 
+  @spec records(GenServer.server(), atom()) :: [{term(), term()}] | {:error, term()}
+  def records(server \\ __MODULE__, kind) when kind in [:incident, :mute, :sensitivity],
+    do: GenServer.call(server, {:records, kind})
+
+  @spec feedback(GenServer.server()) ::
+          {:ok,
+           %{
+             incidents: [{term(), term()}],
+             mutes: [{term(), term()}],
+             sensitivities: [{term(), term()}]
+           }}
+          | {:error, term()}
+  def feedback(server \\ __MODULE__) do
+    with incidents when is_list(incidents) <- records(server, :incident),
+         mutes when is_list(mutes) <- records(server, :mute),
+         sensitivities when is_list(sensitivities) <- records(server, :sensitivity) do
+      {:ok, %{incidents: incidents, mutes: mutes, sensitivities: sensitivities}}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec restore_worker(GenServer.server(), non_neg_integer()) ::
+          {:ok, [checkpoint_entry()]} | :none | {:error, term()}
+  def restore_worker(server \\ __MODULE__, worker_index),
+    do: GenServer.call(server, {:restore_worker, worker_index}, :infinity)
+
   @impl true
   def init(opts) do
     path = Keyword.get(opts, :path)
@@ -125,6 +152,33 @@ defmodule Autoangel.StateStore do
     end
   end
 
+  def handle_call({:records, kind}, _from, state) do
+    records =
+      CubDB.select(state.db)
+      |> Stream.filter(fn
+        {{record_kind, _id}, _value} -> record_kind == kind
+        _ -> false
+      end)
+      |> Enum.map(fn {{_record_kind, id}, value} -> {id, value} end)
+      |> Enum.sort_by(fn {id, _value} -> :erlang.term_to_binary(id) end)
+
+    {:reply, records, state}
+  rescue
+    exception -> {:reply, {:error, exception}, state}
+  end
+
+  def handle_call({:restore_worker, worker_index}, _from, state) do
+    reply =
+      case CubDB.get(state.db, {:checkpoint, :current}) do
+        nil -> :none
+        id -> {:ok, read_checkpoint_for_worker(state.db, id, worker_index)}
+      end
+
+    {:reply, reply, state}
+  rescue
+    exception -> {:reply, {:error, exception}, state}
+  end
+
   defp put_record(server, key, value), do: GenServer.call(server, {:put, key, value}, :infinity)
   defp delete_record(server, key), do: GenServer.call(server, {:delete, key}, :infinity)
 
@@ -142,6 +196,29 @@ defmodule Autoangel.StateStore do
     end)
     |> Enum.map(fn {{:checkpoint, _checkpoint_id, key}, value} -> {key, value} end)
     |> Enum.sort_by(fn {key, _value} -> :erlang.term_to_binary(key) end)
+  end
+
+  defp read_checkpoint_for_worker(db, id, worker_index) do
+    read_checkpoint(db, id)
+    |> Enum.filter(fn {_key, value} -> checkpoint_worker?(value, worker_index) end)
+  end
+
+  defp checkpoint_worker?({_version, _state_bin, meta_bin}, worker_index)
+       when is_binary(meta_bin) do
+    case safe_binary_to_term(meta_bin) do
+      {:ok, %{worker_index: ^worker_index}} -> true
+      {:ok, %{"worker_index" => ^worker_index}} -> true
+      {:ok, _meta} -> false
+      :error -> true
+    end
+  end
+
+  defp checkpoint_worker?(_value, _worker_index), do: true
+
+  defp safe_binary_to_term(binary) do
+    {:ok, :erlang.binary_to_term(binary, [:safe])}
+  rescue
+    _ -> :error
   end
 
   defp cleanup_checkpoint(db, current_id) do
