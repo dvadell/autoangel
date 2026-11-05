@@ -25,7 +25,8 @@ defmodule AutoangelCore.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:cubdb, "~> 2.0"},
-      {:plug, "~> 1.16"}
+      {:plug, "~> 1.16"},
+      {:bandit, "~> 1.6"}
     ]
   end
 end

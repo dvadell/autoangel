@@ -278,15 +278,29 @@ defmodule Autoangel.Workers.Worker do
   defp sample_kind({_, _, _, kind}) when kind in [:gauge, :counter], do: kind
   defp sample_kind(_), do: :gauge
 
-  defp stamp_sample(%Sample{timestamp: nil} = sample, timestamp),
+  defp stamp_sample(%Sample{timestamp: nil, received_at: nil} = sample, timestamp),
     do: %{sample | timestamp: timestamp, received_at: timestamp}
 
-  defp stamp_sample(%Sample{} = sample, received_at), do: %{sample | received_at: received_at}
+  defp stamp_sample(%Sample{timestamp: nil, received_at: received_at} = sample, _now)
+       when is_integer(received_at),
+       do: %{sample | timestamp: received_at}
 
-  defp stamp_sample(%{timestamp: nil} = sample, timestamp),
+  defp stamp_sample(%Sample{received_at: nil} = sample, received_at),
+    do: %{sample | received_at: received_at}
+
+  defp stamp_sample(%Sample{} = sample, _received_at), do: sample
+
+  defp stamp_sample(%{timestamp: nil, received_at: nil} = sample, timestamp),
     do: Map.merge(sample, %{timestamp: timestamp, received_at: timestamp})
 
-  defp stamp_sample(%{} = sample, received_at), do: Map.put(sample, :received_at, received_at)
+  defp stamp_sample(%{timestamp: nil, received_at: received_at} = sample, _now)
+       when is_integer(received_at),
+       do: Map.put(sample, :timestamp, received_at)
+
+  defp stamp_sample(%{received_at: nil} = sample, received_at),
+    do: Map.put(sample, :received_at, received_at)
+
+  defp stamp_sample(%{} = sample, _received_at), do: sample
 
   defp stamp_sample({key, value, nil, kind}, timestamp), do: {key, value, timestamp, kind}
   defp stamp_sample(sample, _timestamp), do: sample
