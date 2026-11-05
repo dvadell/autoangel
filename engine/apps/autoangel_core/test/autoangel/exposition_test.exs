@@ -1,5 +1,6 @@
 defmodule Autoangel.ExpositionTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Autoangel.Exposition
 
@@ -42,5 +43,29 @@ defmodule Autoangel.ExpositionTest do
 
   test "reports the first invalid line" do
     assert {:error, %{line: 2}} = Exposition.parse("valid_metric 1\nnot valid metric 2\n")
+  end
+
+  # **Validates: Requirements 1.5, 2.5**
+  property "Feature: v1, Property 2: an invalid line is reported by its line number" do
+    check all(
+            valid_line_count <- integer(0..20),
+            invalid_line <-
+              member_of([
+                "not valid metric 2",
+                "metric 1.2.3",
+                "metric{label=\"unterminated} 1",
+                "metric{label=\"x\" bad} 1",
+                "metric 1 not-an-integer"
+              ])
+          ) do
+      valid_lines =
+        Enum.take(1..20, valid_line_count)
+        |> Enum.map(fn index -> "metric_#{index} #{index}.0" end)
+
+      expected_line = valid_line_count + 1
+      body = Enum.join(valid_lines ++ [invalid_line, "metric_after_invalid 1.0"], "\n")
+
+      assert {:error, %{line: ^expected_line}} = Exposition.parse(body)
+    end
   end
 end
