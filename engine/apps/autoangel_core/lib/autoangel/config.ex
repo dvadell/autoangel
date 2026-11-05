@@ -20,6 +20,8 @@ defmodule Autoangel.Config do
     scrape_targets: [],
     ingest: %{token: nil, username: nil, password: nil},
     control_api: %{token: nil, username: nil, password: nil},
+    http: %{ingest_port: 9_400, control_port: 9_401},
+    tls: %{cert_file: nil, key_file: nil},
     auth_exemptions: []
   }
 
@@ -285,6 +287,8 @@ defmodule Autoangel.Config do
     retention = section(config, :retention)
     rate = section(config, :ingest_rate_limit)
     storage = section(config, :storage)
+    tls = section(config, :tls)
+    http = section(config, :http)
 
     checks = [
       {:configuration, config[:configuration_error] != true, & &1},
@@ -306,6 +310,9 @@ defmodule Autoangel.Config do
       {:ingest_burst, rate[:burst], &positive_integer?/1},
       {:storage_backend, storage[:backend], &valid_backend?/1},
       {:storage_password, storage[:password], &valid_secret?/1},
+      {:http_ingest_port, http[:ingest_port], &valid_port?/1},
+      {:http_control_port, http[:control_port], &valid_port?/1},
+      {:tls, tls, &valid_tls?/1},
       {:auth_exemptions, config[:auth_exemptions], &valid_exemptions?/1},
       {:distinct_credentials, distinct_credentials?(config), & &1},
       {:scrape_targets, config[:scrape_targets], &valid_targets?/1},
@@ -371,6 +378,17 @@ defmodule Autoangel.Config do
   defp valid_target?(_), do: false
   defp positive_integer?(value), do: is_integer(value) and value > 0
   defp positive_number?(value), do: (is_integer(value) or is_float(value)) and value > 0
+  defp valid_port?(value), do: is_integer(value) and value in 1..65_535
+
+  defp valid_tls?(tls) when is_map(tls) do
+    cert_file = tls[:cert_file]
+    key_file = tls[:key_file]
+
+    (is_nil(cert_file) and is_nil(key_file)) or
+      (is_binary(cert_file) and cert_file != "" and is_binary(key_file) and key_file != "")
+  end
+
+  defp valid_tls?(_), do: false
 
   defp redact_secrets(config),
     do:
