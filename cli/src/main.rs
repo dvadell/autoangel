@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::process::{Command as ProcessCommand, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -201,6 +201,9 @@ pub struct RunArgs {
     pub common: CommonArgs,
     #[arg(long)]
     pub name: String,
+    /// Optional node_exporter textfile destination.
+    #[arg(long, env = "AUTOANGEL_TEXTFILE_PATH", hide_env_values = true)]
+    pub textfile_path: Option<std::path::PathBuf>,
     /// Measure CPU time and maximum resident memory with wait4.
     #[arg(long)]
     pub measure_resources: bool,
@@ -241,6 +244,91 @@ impl PushArgs {
     }
 }
 
+/// Build the single-sample Prometheus exposition body used by `tool push`.
+pub fn build_push_body(args: &PushArgs) -> String {
+    let mut body = String::new();
+    if args.labels.is_empty() {
+        body.push_str(&args.name);
+    } else {
+        body.push_str(&args.name);
+        body.push('{');
+        for (index, label) in args.labels.iter().enumerate() {
+            if index > 0 {
+                body.push(',');
+            }
+            let (name, value) = label
+                .split_once('=')
+                .expect("build_push_body requires validated labels");
+            body.push_str(name);
+            body.push_str("=\"");
+            append_prometheus_label_value(&mut body, value);
+            body.push('"');
+        }
+        body.push('}');
+    }
+    body.push(' ');
+    body.push_str(&args.value);
+    body.push('\n');
+    body
+}
+
+fn append_prometheus_label_value(output: &mut String, value: &str) {
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '"' => output.push_str("\\\""),
+            character => output.push(character),
+        }
+    }
+}
+
+fn basic_auth_header(username: &str, password: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let input = format!("{username}:{password}");
+    let bytes = input.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[((first & 0x03) << 4 | second >> 4) as usize] as char);
+        encoded.push(if chunk.len() > 1 {
+            ALPHABET[((second & 0x0f) << 2 | third >> 6) as usize] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    format!("Basic {encoded}")
+}
+
+fn push_sample(config: &Config, body: &str) -> Result<(), String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(config.attempt_timeout)
+        .redirects(0)
+        .build();
+    let mut request = agent
+        .post(&config.ingest_endpoint)
+        .set("Content-Type", "text/plain; version=0.0.4");
+    request = match &config.credential {
+        Credential::Bearer(token) => request.set("Authorization", &format!("Bearer {token}")),
+        Credential::Basic { username, password } => {
+            request.set("Authorization", &basic_auth_header(username, password))
+        }
+    };
+    match request.send_string(body) {
+        Ok(response) if (200..300).contains(&response.status()) => Ok(()),
+        Ok(response) => Err(format!("server returned HTTP {}", response.status())),
+        Err(_) => Err("request could not be completed".to_owned()),
+    }
+}
+
 fn positive_seconds(value: &str) -> Result<u64, String> {
     let seconds = value
         .parse::<u64>()
@@ -267,11 +355,12 @@ fn validate_cli(cli: &Cli) -> Result<(), String> {
 }
 
 #[derive(Debug, PartialEq)]
-struct RunMeasurement {
-    exit_code: i32,
-    wall_seconds: f64,
-    cpu_seconds: Option<f64>,
-    max_rss_bytes: Option<u64>,
+pub struct RunMeasurement {
+    pub start_timestamp_ms: i64,
+    pub exit_code: i32,
+    pub wall_seconds: f64,
+    pub cpu_seconds: Option<f64>,
+    pub max_rss_bytes: Option<u64>,
 }
 
 fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
@@ -280,6 +369,10 @@ fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
         .first()
         .ok_or_else(|| "missing command after `--`".to_owned())?;
     let start = Instant::now();
+    let start_timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
     let child = ProcessCommand::new(program)
         .args(&args.command[1..])
         .stdin(Stdio::inherit())
@@ -303,6 +396,7 @@ fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
     };
 
     Ok(RunMeasurement {
+        start_timestamp_ms,
         exit_code,
         wall_seconds: start.elapsed().as_secs_f64(),
         cpu_seconds,
@@ -358,6 +452,176 @@ fn wait_for_child(
     Ok((exit_code, cpu_seconds, max_rss_bytes))
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunMetrics {
+    pub name: String,
+    pub timestamp_ms: i64,
+    pub duration_seconds: f64,
+    pub exit_code: i32,
+    pub cpu_seconds: Option<f64>,
+    pub max_rss_bytes: Option<u64>,
+}
+
+impl RunMetrics {
+    pub fn from_measurement(
+        name: impl Into<String>,
+        timestamp_ms: i64,
+        measurement: &RunMeasurement,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            timestamp_ms,
+            duration_seconds: measurement.wall_seconds,
+            exit_code: measurement.exit_code,
+            cpu_seconds: measurement.cpu_seconds,
+            max_rss_bytes: measurement.max_rss_bytes,
+        }
+    }
+}
+
+fn format_sample_value(value: f64) -> String {
+    if value.is_nan() {
+        "NaN".to_owned()
+    } else if value == f64::INFINITY {
+        "+Inf".to_owned()
+    } else if value == f64::NEG_INFINITY {
+        "-Inf".to_owned()
+    } else {
+        value.to_string()
+    }
+}
+
+fn escape_label_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    append_prometheus_label_value(&mut escaped, value);
+    escaped
+}
+
+/// Build the Prometheus exposition body for one completed run.
+pub fn build_run_body(metrics: &RunMetrics, include_timestamp: bool) -> String {
+    let job = escape_label_value(&metrics.name);
+    let timestamp = if include_timestamp {
+        format!(" {}", metrics.timestamp_ms)
+    } else {
+        String::new()
+    };
+    let mut output = String::new();
+    let mut add = |name: &str, value: f64| {
+        output.push_str("# TYPE ");
+        output.push_str(name);
+        output.push_str(" gauge\n");
+        output.push_str(name);
+        output.push_str("{job=\"");
+        output.push_str(&job);
+        output.push_str("\"} ");
+        output.push_str(&format_sample_value(value));
+        output.push_str(&timestamp);
+        output.push('\n');
+    };
+
+    add("autoangel_job_duration_seconds", metrics.duration_seconds);
+    add("autoangel_job_exit_code", metrics.exit_code as f64);
+    add("autoangel_job_success", f64::from(metrics.exit_code == 0));
+    if let Some(value) = metrics.cpu_seconds {
+        add("autoangel_job_cpu_seconds", value);
+    }
+    if let Some(value) = metrics.max_rss_bytes {
+        add("autoangel_job_max_rss_bytes", value as f64);
+    }
+    output
+}
+
+/// Write a node_exporter textfile atomically, replacing its previous contents.
+pub fn write_textfile(path: &std::path::Path, metrics: &RunMetrics) -> std::io::Result<()> {
+    use std::fs::{self, File, OpenOptions};
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "textfile path has no file name",
+        )
+    })?;
+    let temporary = parent.join(format!(
+        ".{}.tmp.{}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true).mode(0o644);
+        let mut file = options.open(&temporary)?;
+        file.write_all(build_run_body(metrics, false).as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        let directory = File::open(parent)?;
+        directory.sync_all()
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+/// Write a textfile and report a single path-specific failure without panicking.
+pub fn write_textfile_or_report(path: &std::path::Path, metrics: &RunMetrics) {
+    if let Err(error) = write_textfile(path, metrics) {
+        eprintln!("could not write textfile {}: {error}", path.display());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushError {
+    Failed,
+}
+
+fn report_push_drop() -> Result<(), PushError> {
+    eprintln!("push failed; measurements were dropped");
+    Err(PushError::Failed)
+}
+
+/// Push one completed run, retrying failed attempts until the configured deadline.
+pub fn push_run(config: &Config, metrics: &RunMetrics) -> Result<(), PushError> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(config.attempt_timeout)
+        .build();
+    let body = build_run_body(metrics, true);
+    let started = Instant::now();
+    let mut backoff = Duration::from_millis(500);
+
+    loop {
+        let mut request = agent
+            .post(&config.ingest_endpoint)
+            .set("Content-Type", "text/plain; version=0.0.4");
+        request = match &config.credential {
+            Credential::Bearer(token) => request.set("Authorization", &format!("Bearer {token}")),
+            Credential::Basic { username, password } => {
+                request.set("Authorization", &basic_auth_header(username, password))
+            }
+        };
+        let succeeded = request
+            .send_string(&body)
+            .is_ok_and(|response| response.status() / 100 == 2);
+        if succeeded {
+            return Ok(());
+        }
+        if started.elapsed() >= config.retry_duration {
+            return report_push_drop();
+        }
+        std::thread::sleep(backoff.min(config.retry_duration.saturating_sub(started.elapsed())));
+        if started.elapsed() >= config.retry_duration {
+            return report_push_drop();
+        }
+        backoff = (backoff * 2).min(Duration::from_secs(10));
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     if let Err(error) = validate_cli(&cli) {
@@ -366,15 +630,36 @@ fn main() {
     }
     match &cli.command {
         Command::Run(args) => match run_command(args) {
-            Ok(measurement) => std::process::exit(measurement.exit_code),
+            Ok(measurement) => {
+                let config = args.common.config().expect("validated configuration");
+                let metrics = RunMetrics::from_measurement(
+                    &args.name,
+                    measurement.start_timestamp_ms,
+                    &measurement,
+                );
+                if let Some(path) = &args.textfile_path {
+                    write_textfile_or_report(path, &metrics);
+                }
+                let _ = push_run(&config, &metrics);
+                std::process::exit(measurement.exit_code);
+            }
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(127);
             }
         },
-        Command::Push(_) => {
-            eprintln!("push client is not implemented yet");
-            std::process::exit(2);
+        Command::Push(args) => {
+            let body = build_push_body(args);
+            match push_sample(
+                &args.common.config().expect("validated configuration"),
+                &body,
+            ) {
+                Ok(()) => std::process::exit(0),
+                Err(error) => {
+                    eprintln!("push failed: {error}");
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }
@@ -447,6 +732,119 @@ mod tests {
     }
 
     #[test]
+    fn builds_one_prometheus_sample_with_escaped_labels() {
+        let args = PushArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".into()),
+                bearer_token: Some("secret".into()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "job_value".into(),
+            value: "NaN".into(),
+            labels: vec!["path=a\\b\"c\nd".into(), "job=nightly".into()],
+        };
+        assert_eq!(
+            build_push_body(&args),
+            "job_value{path=\"a\\\\b\\\"c\\nd\",job=\"nightly\"} NaN\n"
+        );
+    }
+
+    #[test]
+    fn builds_sample_without_labels() {
+        let args = PushArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".into()),
+                bearer_token: Some("secret".into()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "metric".into(),
+            value: "1.25".into(),
+            labels: vec![],
+        };
+        assert_eq!(build_push_body(&args), "metric 1.25\n");
+    }
+
+    #[test]
+    fn builds_run_body_with_one_timestamp_and_textfile_omits_it() {
+        let metrics = RunMetrics {
+            name: "backup\\\"nightly".into(),
+            timestamp_ms: 1_793_520_000_000,
+            duration_seconds: 12.84,
+            exit_code: 0,
+            cpu_seconds: Some(2.5),
+            max_rss_bytes: Some(4096),
+        };
+        let body = build_run_body(&metrics, true);
+        assert_eq!(body.matches(" 1793520000000\n").count(), 5);
+        assert!(body.contains("backup"));
+        assert!(body.contains("nightly"));
+        assert!(!build_run_body(&metrics, false).contains("1793520000000"));
+    }
+
+    #[test]
+    fn basic_auth_header_is_rfc7617_shape() {
+        assert_eq!(basic_auth_header("user", "pass"), "Basic dXNlcjpwYXNz");
+    }
+
+    #[test]
+    fn textfile_replacement_is_atomic_and_replaces_content() {
+        let directory = std::env::temp_dir().join(format!("autoangel-cli-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("jobs.prom");
+        std::fs::write(&path, "old\n").unwrap();
+        let metrics = RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 10,
+            duration_seconds: 1.0,
+            exit_code: 0,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+        };
+        write_textfile(&path, &metrics).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("autoangel_job_duration_seconds{job=\"job\"} 1"));
+        assert!(!content.contains(" 10"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn textfile_supports_relative_paths() {
+        let path =
+            std::env::temp_dir().join(format!("autoangel-relative-{}.prom", std::process::id()));
+        let metrics = RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 10,
+            duration_seconds: 1.0,
+            exit_code: 0,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+        };
+        write_textfile(&path, &metrics).unwrap();
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn textfile_failure_returns_an_error_for_reporting() {
+        let path = std::path::Path::new("/definitely/missing/jobs.prom");
+        let metrics = RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 10,
+            duration_seconds: 1.0,
+            exit_code: 0,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+        };
+        assert!(write_textfile(path, &metrics).is_err());
+    }
+
+    #[test]
     fn rejects_duplicate_labels() {
         let args = PushArgs {
             common: CommonArgs {
@@ -483,6 +881,7 @@ mod tests {
                 retry_duration_secs: 60,
             },
             name: "job".to_owned(),
+            textfile_path: None,
             measure_resources: true,
             command: vec!["sh".into(), "-c".into(), "exit 7".into()],
         };
@@ -506,6 +905,7 @@ mod tests {
                 retry_duration_secs: 60,
             },
             name: "job".to_owned(),
+            textfile_path: None,
             measure_resources: false,
             command: vec!["sh".into(), "-c".into(), "kill -TERM $$".into()],
         };
@@ -527,6 +927,7 @@ mod tests {
                 retry_duration_secs: 60,
             },
             name: "job".to_owned(),
+            textfile_path: None,
             measure_resources: false,
             command: vec!["definitely-not-a-real-command".into()],
         };
