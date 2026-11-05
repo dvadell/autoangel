@@ -77,10 +77,12 @@ defmodule AutoangelTsdb.Migrations do
   end
 
   defp query_ok(conn, sql, opts) do
-    case Postgrex.query(conn, sql, [], timeout: Keyword.get(opts, :timeout, 15_000)) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    Enum.reduce_while(String.split(sql, ~r/;\s*/, trim: true), :ok, fn statement, :ok ->
+      case Postgrex.query(conn, statement, [], timeout: Keyword.get(opts, :timeout, 15_000)) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp transaction_result({:ok, :ok}), do: :ok
@@ -168,19 +170,19 @@ defmodule AutoangelTsdb.Migrations do
              max(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS maximum,
              avg(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS mean,
              count(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS sample_count
-      FROM samples GROUP BY series_id, bucket;
+      FROM samples GROUP BY series_id, bucket WITH NO DATA;
     CREATE MATERIALIZED VIEW IF NOT EXISTS samples_1h WITH (timescaledb.continuous) AS
       SELECT series_id, time_bucket(INTERVAL '1 hour', ts) AS bucket,
              min(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS minimum,
              max(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS maximum,
              avg(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS mean,
              count(value) FILTER (WHERE value NOT IN ('NaN'::double precision, 'Infinity'::double precision, '-Infinity'::double precision)) AS sample_count
-      FROM samples GROUP BY series_id, bucket;
+      FROM samples GROUP BY series_id, bucket WITH NO DATA;
     CREATE MATERIALIZED VIEW IF NOT EXISTS baseline_bands_1h WITH (timescaledb.continuous) AS
       SELECT series_id, time_bucket(INTERVAL '1 hour', ts) AS bucket,
              min(lower_bound) AS minimum, max(upper_bound) AS maximum,
              avg(lower_bound) AS mean, count(*) AS sample_count
-      FROM baseline_bands GROUP BY series_id, bucket;
+      FROM baseline_bands GROUP BY series_id, bucket WITH NO DATA;
     """
   end
 

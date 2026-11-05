@@ -23,7 +23,9 @@ defmodule AutoangelTsdb.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test]},
-      {:postgrex, "~> 0.19"}
+      {:postgrex, "~> 0.19"},
+      {:jason, "~> 1.4"},
+      {:autoangel_core, in_umbrella: true}
     ]
   end
 end

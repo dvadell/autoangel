@@ -220,7 +220,7 @@ defmodule AutoangelTsdb do
 
   defp copy_write(conn, rows) do
     stream = Postgrex.stream(conn, "COPY samples (series_id, ts, value) FROM STDIN BINARY", [])
-    :ok = Enum.into([copy_binary(rows)], stream)
+    _ = Enum.into([copy_binary(rows)], stream)
     :ok
   rescue
     exception -> {:error, exception}
@@ -334,6 +334,7 @@ defmodule AutoangelTsdb do
   defp encode_value(:nan), do: 0x7FF8_0000_0000_0000
   defp encode_value(:inf), do: 0x7FF0_0000_0000_0000
   defp encode_value(:neg_inf), do: 0xFFF0_0000_0000_0000
+  defp encode_value(value) when is_integer(value), do: encode_value(value * 1.0)
 
   defp encode_value(value) when is_float(value),
     do: <<value::float-big>> |> :binary.decode_unsigned()
