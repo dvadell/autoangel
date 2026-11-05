@@ -47,6 +47,7 @@ run_rust_checks() {
 }
 
 run_elixir_checks engine
+run "$root/scripts/dependency_checks.sh"
 run_elixir_checks console
 run_elixir_checks shared/autoangel_schema
 run_elixir_checks replay

@@ -38,4 +38,9 @@ if ! grep -Fqx "$root/scripts/rust_safety_checks.sh" <<<"$output"; then
   exit 1
 fi
 
+if ! grep -Fqx "$root/scripts/dependency_checks.sh" <<<"$output"; then
+  printf 'quality gate is missing command: %s\n' "$root/scripts/dependency_checks.sh" >&2
+  exit 1
+fi
+
 printf 'quality gate command matrix is complete\n'
