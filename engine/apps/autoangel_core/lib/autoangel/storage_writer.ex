@@ -136,6 +136,7 @@ defmodule Autoangel.Storage.Writer do
 
     state = %{state | queue: queue, size: size} |> increment(:dropped, dropped)
     notify_drops(state, dropped)
+    notify(state, {:storage_enqueued, dropped == 0})
     state
   end
 
@@ -242,6 +243,8 @@ defmodule Autoangel.Storage.Writer do
   end
 
   defp finish_batch(state, :ok, _batch, queue, size, _uuid, _new_batch) do
+    notify(state, :database_success)
+
     state
     |> increment(:successful, 1)
     |> Map.merge(%{queue: queue, size: size, retry_ms: state.initial_retry_ms, retry_batch: nil})
@@ -292,6 +295,11 @@ defmodule Autoangel.Storage.Writer do
   defp notify_drops(_state, 0), do: :ok
   defp notify_drops(state, count), do: notify(state, {:storage_dropped, count})
   defp notify(%{self_monitor: pid}, event) when is_pid(pid), do: send(pid, event)
+
+  defp notify(%{self_monitor: name}, event) when is_atom(name) do
+    if Process.whereis(name), do: send(name, event), else: :ok
+  end
+
   defp notify(_, _), do: :ok
 
   defp positive_option(opts, key, default) do

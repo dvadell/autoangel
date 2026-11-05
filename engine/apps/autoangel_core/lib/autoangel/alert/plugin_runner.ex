@@ -17,6 +17,7 @@ defmodule Autoangel.Alert.PluginRunner do
             breaker_threshold: @default_breaker_threshold,
             cooloff: @default_cooloff,
             task_supervisor: nil,
+            observer: nil,
             current: nil,
             current_task: nil,
             timer: nil,
@@ -63,7 +64,8 @@ defmodule Autoangel.Alert.PluginRunner do
       max_attempts: Keyword.get(opts, :max_attempts, @default_attempts),
       breaker_threshold: Keyword.get(opts, :breaker_threshold, @default_breaker_threshold),
       cooloff: Keyword.get(opts, :cooloff, @default_cooloff),
-      task_supervisor: Keyword.fetch!(opts, :task_supervisor)
+      task_supervisor: Keyword.fetch!(opts, :task_supervisor),
+      observer: Keyword.get(opts, :observer)
     }
 
     {:ok, state}
@@ -183,7 +185,7 @@ defmodule Autoangel.Alert.PluginRunner do
         consecutive_failures: 0
     }
 
-    state |> put_metric(:success) |> start_or_skip()
+    state |> put_metric(:success) |> notify_observer(:success) |> start_or_skip()
   end
 
   defp handle_result(state, _alert, _attempt, {:permanent, reason}),
@@ -230,6 +232,7 @@ defmodule Autoangel.Alert.PluginRunner do
         do: open_breaker(state),
         else: state
 
+    state = notify_observer(state, :failure)
     start_or_skip(state)
   end
 
@@ -279,7 +282,28 @@ defmodule Autoangel.Alert.PluginRunner do
     max(base + jitter, base - div(base, 5) + attempt)
   end
 
-  defp put_metric(state, key), do: %{state | metrics: Map.update(state.metrics, key, 1, &(&1 + 1))}
+  defp put_metric(state, key),
+    do: %{state | metrics: Map.update(state.metrics, key, 1, &(&1 + 1))}
+
+  defp notify_observer(%{observer: observer, plugin: plugin} = state, outcome)
+       when is_pid(observer) do
+    send(observer, {:plugin_delivery, plugin, outcome})
+    state
+  end
+
+  defp notify_observer(%{observer: observer, plugin: plugin} = state, outcome)
+       when is_function(observer, 2) do
+    try do
+      observer.(plugin, outcome)
+    rescue
+      _error -> :ok
+    end
+
+    state
+  end
+
+  defp notify_observer(state, _outcome), do: state
+
   defp cancel_timer(nil), do: :ok
   defp cancel_timer(timer), do: Process.cancel_timer(timer)
 end

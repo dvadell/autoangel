@@ -74,6 +74,7 @@ defmodule Autoangel.Ingest do
             release_rejected(rejected_by_worker, reservations)
             enqueue_workers(accepted_by_worker, opts)
             enqueue_storage(accepted, opts)
+            if accepted != [], do: notify_self_monitor(opts, :accepted_sample)
             {:ok, %{accepted: length(accepted), rejected_cardinality: rejected}}
 
           {:error, _reason} ->
@@ -200,6 +201,14 @@ defmodule Autoangel.Ingest do
 
       _ ->
         :ok
+    end
+  end
+
+  defp notify_self_monitor(opts, event) do
+    case Keyword.get(opts, :self_monitor) do
+      pid when is_pid(pid) -> send(pid, event)
+      name when is_atom(name) -> if Process.whereis(name), do: send(name, event), else: :ok
+      _ -> :ok
     end
   end
 
