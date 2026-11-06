@@ -7,69 +7,82 @@ defmodule Autoangel.Plugin.Email do
 
   @impl true
   def validate_config(config) when is_map(config) do
-    missing =
-      [
-        {:server, value(config, :server)},
-        {:sender, value(config, :sender)},
-        {:recipients, value(config, :recipients)}
-      ]
-      |> Enum.flat_map(fn
-        {:recipients, recipients} when is_list(recipients) and recipients != [] -> []
-        {_field, value} when is_binary(value) and byte_size(value) > 0 -> []
-        {field, _value} -> [field]
-      end)
+    fields =
+      Enum.uniq(
+        missing_fields(config) ++
+          invalid_recipient_fields(config) ++
+          auth_pair_fields(config) ++
+          header_safe_fields(config) ++
+          type_fields(config)
+      )
 
-    invalid =
-      case value(config, :recipients) do
-        recipients when is_list(recipients) ->
-          if Enum.all?(recipients, &(is_binary(&1) and &1 != "" and safe_header?(&1))),
-            do: [],
-            else: [:recipients]
-
-        _ ->
-          []
-      end
-
-    auth_fields =
-      cond do
-        is_binary(value(config, :username)) and not is_binary(value(config, :password)) ->
-          [:password]
-
-        is_binary(value(config, :password)) and not is_binary(value(config, :username)) ->
-          [:username]
-
-        true ->
-          []
-      end
-
-    invalid_fields =
-      Enum.flat_map([:server, :sender, :subject], fn field ->
-        case value(config, field) do
-          value when is_binary(value) -> if safe_header?(value), do: [], else: [field]
-          _ -> []
-        end
-      end)
-
-    type_fields =
-      if(
-        is_nil(value(config, :port)) or
-          (is_integer(value(config, :port)) and value(config, :port) in 1..65_535),
-        do: [],
-        else: [:port]
-      ) ++
-        if(
-          is_nil(value(config, :timeout)) or
-            (is_integer(value(config, :timeout)) and value(config, :timeout) > 0),
-          do: [],
-          else: [:timeout]
-        ) ++
-        if value(config, :tls) in [nil, false, true, :ssl], do: [], else: [:tls]
-
-    fields = Enum.uniq(missing ++ invalid ++ auth_fields ++ invalid_fields ++ type_fields)
     if fields == [], do: :ok, else: {:error, fields}
   end
 
   def validate_config(_), do: {:error, [:configuration]}
+
+  defp missing_fields(config) do
+    [
+      {:server, value(config, :server)},
+      {:sender, value(config, :sender)},
+      {:recipients, value(config, :recipients)}
+    ]
+    |> Enum.flat_map(fn
+      {:recipients, recipients} when is_list(recipients) and recipients != [] -> []
+      {_field, value} when is_binary(value) and byte_size(value) > 0 -> []
+      {field, _value} -> [field]
+    end)
+  end
+
+  defp invalid_recipient_fields(config) do
+    case value(config, :recipients) do
+      recipients when is_list(recipients) ->
+        if Enum.all?(recipients, &(is_binary(&1) and &1 != "" and safe_header?(&1))),
+          do: [],
+          else: [:recipients]
+
+      _ ->
+        []
+    end
+  end
+
+  defp auth_pair_fields(config) do
+    username = value(config, :username)
+    password = value(config, :password)
+
+    cond do
+      is_binary(username) and not is_binary(password) -> [:password]
+      is_binary(password) and not is_binary(username) -> [:username]
+      true -> []
+    end
+  end
+
+  defp header_safe_fields(config) do
+    Enum.flat_map([:server, :sender, :subject], &header_field_errors(&1, value(config, &1)))
+  end
+
+  defp header_field_errors(field, value) when is_binary(value) do
+    if safe_header?(value), do: [], else: [field]
+  end
+
+  defp header_field_errors(_field, _value), do: []
+
+  defp type_fields(config) do
+    port_field(value(config, :port)) ++
+      timeout_field(value(config, :timeout)) ++
+      tls_field(value(config, :tls))
+  end
+
+  defp port_field(nil), do: []
+  defp port_field(port) when is_integer(port) and port in 1..65_535, do: []
+  defp port_field(_port), do: [:port]
+
+  defp timeout_field(nil), do: []
+  defp timeout_field(timeout) when is_integer(timeout) and timeout > 0, do: []
+  defp timeout_field(_timeout), do: [:timeout]
+
+  defp tls_field(tls) when tls in [nil, false, true, :ssl], do: []
+  defp tls_field(_tls), do: [:tls]
 
   @impl true
   def deliver(alert, config) when is_map(config) do
@@ -136,19 +149,18 @@ defmodule Autoangel.Plugin.Email do
     username = value(config, :username)
     password = value(config, :password)
 
-    if is_binary(username) and is_binary(password) do
-      case socket do
-        {:tcp, _socket} ->
-          {:error, {:permanent, :credentials_require_tls}}
+    if is_binary(username) and is_binary(password),
+      do: authenticate_login(socket, username, password),
+      else: {:ok, socket}
+  end
 
-        _ ->
-          with {:ok, socket} <- command(socket, "AUTH LOGIN", 334),
-               {:ok, socket} <- command(socket, Base.encode64(username), 334) do
-            command(socket, Base.encode64(password), 235)
-          end
-      end
-    else
-      {:ok, socket}
+  defp authenticate_login({:tcp, _socket}, _username, _password),
+    do: {:error, {:permanent, :credentials_require_tls}}
+
+  defp authenticate_login(socket, username, password) do
+    with {:ok, socket} <- command(socket, "AUTH LOGIN", 334),
+         {:ok, socket} <- command(socket, Base.encode64(username), 334) do
+      command(socket, Base.encode64(password), 235)
     end
   end
 

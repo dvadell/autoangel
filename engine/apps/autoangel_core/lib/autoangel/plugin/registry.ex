@@ -100,56 +100,13 @@ defmodule Autoangel.Plugin.Registry do
 
   defp enabled_plugins(config) when is_map(config) do
     normalized_config = Map.new(config, fn {key, value} -> {normalize_name(key), value} end)
-    explicit = normalized_config |> Map.get("enabled", :not_configured)
+    explicit = Map.get(normalized_config, "enabled", :not_configured)
+    explicit_names = explicit_names(explicit)
+    names = Enum.uniq(explicit_names ++ section_names(normalized_config, explicit))
 
-    explicit_names =
-      if explicit == :not_configured, do: [], else: Enum.map(List.wrap(explicit), &normalize_name/1)
-
-    section_names =
-      if explicit == :not_configured,
-        do: Map.delete(normalized_config, "enabled") |> Map.keys(),
-        else: []
-
-    names = Enum.uniq(explicit_names ++ section_names)
-
-    invalid_section =
-      normalized_config
-      |> Map.delete("enabled")
-      |> Enum.find(fn {_name, value} -> not (is_map(value) or is_boolean(value)) end)
-
-    cond do
-      invalid_section != nil ->
-        {:error, ["plugins.#{elem(invalid_section, 0)}: invalid configuration"]}
-
-      Enum.any?(names, &(&1 == "")) ->
-        {:error, ["plugins.enabled: invalid plugin name"]}
-
-      not (explicit == :not_configured or is_list(explicit)) ->
-        {:error, ["plugins.enabled: invalid configuration"]}
-
-      true ->
-        {:ok,
-         Enum.map(names, fn name ->
-           value = Map.get(normalized_config, name, false)
-
-           plugin_config =
-             cond do
-               name in explicit_names ->
-                 normalize_plugin_config(value)
-
-               is_map(value) and Map.get(value, :enabled, true) == true ->
-                 Map.delete(value, :enabled)
-
-               value == true ->
-                 %{}
-
-               true ->
-                 :disabled
-             end
-
-           {name, plugin_config}
-         end)
-         |> Enum.reject(fn {_name, value} -> value == :disabled end)}
+    case map_config_error(normalized_config, names, explicit) do
+      nil -> {:ok, build_enabled(normalized_config, names, explicit_names)}
+      error -> {:error, [error]}
     end
   end
 
@@ -181,6 +138,53 @@ defmodule Autoangel.Plugin.Registry do
   end
 
   defp enabled_plugins(_config), do: {:error, ["plugins: invalid configuration"]}
+
+  defp explicit_names(:not_configured), do: []
+  defp explicit_names(explicit), do: Enum.map(List.wrap(explicit), &normalize_name/1)
+
+  defp section_names(_normalized_config, explicit) when explicit != :not_configured, do: []
+
+  defp section_names(normalized_config, _explicit),
+    do: normalized_config |> Map.delete("enabled") |> Map.keys()
+
+  defp map_config_error(normalized_config, names, explicit) do
+    invalid_section =
+      normalized_config
+      |> Map.delete("enabled")
+      |> Enum.find(fn {_name, value} -> not (is_map(value) or is_boolean(value)) end)
+
+    cond do
+      invalid_section != nil ->
+        "plugins.#{elem(invalid_section, 0)}: invalid configuration"
+
+      Enum.any?(names, &(&1 == "")) ->
+        "plugins.enabled: invalid plugin name"
+
+      not (explicit == :not_configured or is_list(explicit)) ->
+        "plugins.enabled: invalid configuration"
+
+      true ->
+        nil
+    end
+  end
+
+  defp build_enabled(normalized_config, names, explicit_names) do
+    names
+    |> Enum.map(fn name ->
+      value = Map.get(normalized_config, name, false)
+      {name, plugin_config_for(name, value, explicit_names)}
+    end)
+    |> Enum.reject(fn {_name, value} -> value == :disabled end)
+  end
+
+  defp plugin_config_for(name, value, explicit_names) do
+    cond do
+      name in explicit_names -> normalize_plugin_config(value)
+      is_map(value) and Map.get(value, :enabled, true) == true -> Map.delete(value, :enabled)
+      value == true -> %{}
+      true -> :disabled
+    end
+  end
 
   defp validate_plugin_entries(entries),
     do:

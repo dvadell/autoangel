@@ -1,6 +1,8 @@
 defmodule Autoangel.Alert.PluginRunnerTest do
   use ExUnit.Case, async: true
 
+  alias Autoangel.Alert.PluginRunner
+
   defmodule SuccessfulPlugin do
     @behaviour Autoangel.Plugin
     def validate_config(_), do: :ok
@@ -49,16 +51,16 @@ defmodule Autoangel.Alert.PluginRunnerTest do
     alert = %{anomaly_id: "a-1"}
 
     {:ok, runner} =
-      Autoangel.Alert.PluginRunner.start_link(
+      PluginRunner.start_link(
         plugin: SuccessfulPlugin,
         config: %{parent: self()},
         task_supervisor: task_supervisor,
         timeout: 100
       )
 
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, alert)
+    assert :ok = PluginRunner.enqueue(runner, alert)
     assert_receive {:delivered, ^alert}, 500
-    assert %{success: 1, queue_depth: 0} = Autoangel.Alert.PluginRunner.metrics(runner)
+    assert %{success: 1, queue_depth: 0} = PluginRunner.metrics(runner)
   end
 
   test "retries retryable delivery and records final success", %{task_supervisor: task_supervisor} do
@@ -70,7 +72,7 @@ defmodule Autoangel.Alert.PluginRunnerTest do
     config = %{parent: self(), attempts: attempts}
 
     {:ok, runner} =
-      Autoangel.Alert.PluginRunner.start_link(
+      PluginRunner.start_link(
         plugin: plugin,
         config: config,
         task_supervisor: task_supervisor,
@@ -78,16 +80,16 @@ defmodule Autoangel.Alert.PluginRunnerTest do
         max_attempts: 2
       )
 
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, %{anomaly_id: "a-2"})
+    assert :ok = PluginRunner.enqueue(runner, %{anomaly_id: "a-2"})
     assert_receive {:attempt, 1}, 500
     assert_receive {:attempt, 2}, 3_000
-    assert %{retryable: 1, success: 1} = Autoangel.Alert.PluginRunner.metrics(runner)
+    assert %{retryable: 1, success: 1} = PluginRunner.metrics(runner)
     Agent.stop(attempts)
   end
 
   test "records permanent failures without crashing", %{task_supervisor: task_supervisor} do
     {:ok, runner} =
-      Autoangel.Alert.PluginRunner.start_link(
+      PluginRunner.start_link(
         plugin: PermanentPlugin,
         config: %{},
         task_supervisor: task_supervisor,
@@ -95,17 +97,17 @@ defmodule Autoangel.Alert.PluginRunnerTest do
         max_attempts: 1
       )
 
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, %{anomaly_id: "permanent"})
+    assert :ok = PluginRunner.enqueue(runner, %{anomaly_id: "permanent"})
 
     assert_eventually(
-      fn -> Autoangel.Alert.PluginRunner.failures(runner) end,
+      fn -> PluginRunner.failures(runner) end,
       fn failures -> match?([%{anomaly: "permanent", error_class: :permanent}], failures) end
     )
   end
 
   test "abandons timed out delivery and records timeout", %{task_supervisor: task_supervisor} do
     {:ok, runner} =
-      Autoangel.Alert.PluginRunner.start_link(
+      PluginRunner.start_link(
         plugin: BlockingPlugin,
         config: %{},
         task_supervisor: task_supervisor,
@@ -113,10 +115,10 @@ defmodule Autoangel.Alert.PluginRunnerTest do
         max_attempts: 1
       )
 
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, %{anomaly_id: "timeout"})
+    assert :ok = PluginRunner.enqueue(runner, %{anomaly_id: "timeout"})
 
     assert_eventually(
-      fn -> Autoangel.Alert.PluginRunner.failures(runner) end,
+      fn -> PluginRunner.failures(runner) end,
       fn failures -> match?([%{anomaly: "timeout", error_class: :timeout}], failures) end
     )
   end
@@ -140,7 +142,7 @@ defmodule Autoangel.Alert.PluginRunnerTest do
     plugin = BlockingPlugin
 
     {:ok, runner} =
-      Autoangel.Alert.PluginRunner.start_link(
+      PluginRunner.start_link(
         plugin: plugin,
         config: %{parent: self()},
         task_supervisor: task_supervisor,
@@ -148,8 +150,8 @@ defmodule Autoangel.Alert.PluginRunnerTest do
         timeout: 1_000
       )
 
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, %{id: 1})
-    assert :ok = Autoangel.Alert.PluginRunner.enqueue(runner, %{id: 2})
-    assert {:error, :full} = Autoangel.Alert.PluginRunner.enqueue(runner, %{id: 3})
+    assert :ok = PluginRunner.enqueue(runner, %{id: 1})
+    assert :ok = PluginRunner.enqueue(runner, %{id: 2})
+    assert {:error, :full} = PluginRunner.enqueue(runner, %{id: 3})
   end
 end

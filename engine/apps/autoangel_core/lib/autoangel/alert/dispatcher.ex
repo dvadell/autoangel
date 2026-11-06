@@ -94,9 +94,6 @@ defmodule Autoangel.Alert.Dispatcher do
       {:error, reason} ->
         Logger.error("alert incident restore failed: #{inspect(reason)}")
         %{}
-
-      _ ->
-        %{}
     end
   catch
     :exit, reason ->
