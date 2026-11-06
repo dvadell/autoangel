@@ -48,20 +48,84 @@ defmodule Autoangel.ConfigTest do
     assert Autoangel.LoggerSecretFilter.filter(report, ["secret"]) == report
   end
 
-  test "refuses multiple storage backends during startup validation" do
-    assert catch_exit(
-             Config.load(
-               ~S"""
-               [storage]
-               backend = "none"
-               backends = ["timescaledb", "timescaledb"]
-               """,
-               %{}
-             )
-           )
+  test "rejects multiple storage backends" do
+    assert_invalid_setting(
+      ~S"""
+      [storage]
+      backend = "none"
+      backends = ["timescaledb", "timescaledb"]
+      """,
+      "storage_backend_selection"
+    )
   end
 
-  test "refuses a selected backend that lacks the storage callbacks" do
-    assert catch_exit(Config.load("[storage]\nbackend = \"timescaledb\"\n", %{}))
+  test "rejects invalid cardinality limits" do
+    assert_invalid_setting("[cardinality]\nper_metric = 0\n", "cardinality_per_metric")
+    assert_invalid_setting("[cardinality]\ntotal = 0\n", "cardinality_total")
+  end
+
+  test "rejects invalid learning duration and cycle count" do
+    assert_invalid_setting("[learning]\nduration = 0\n", "learning_duration")
+    assert_invalid_setting("[learning]\ncycles = 1\n", "learning_cycles")
+  end
+
+  test "rejects invalid missing-data settings" do
+    assert_invalid_setting("[missing_data]\nmultiple = 1\n", "missing_data_multiple")
+    assert_invalid_setting("[missing_data]\nsweep_interval = 0\n", "sweep_interval")
+  end
+
+  test "rejects invalid persistence settings" do
+    assert_invalid_setting("[persistence]\nn = 0\n", "persistence_n")
+    assert_invalid_setting("[persistence]\nm = 0\n", "persistence_m")
+  end
+
+  test "rejects invalid candidate pool settings" do
+    assert_invalid_setting("[correlation]\ncandidate_pool_limit = 0\n", "candidate_pool_limit")
+    assert_invalid_setting("[correlation]\nsupport_threshold = -1\n", "support_threshold")
+  end
+
+  test "rejects invalid retention windows" do
+    assert_invalid_setting("[retention]\nraw = 0\n", "retention_raw")
+    assert_invalid_setting("[retention]\naggregate = 0\n", "retention_aggregate")
+    assert_invalid_setting("[retention]\nanomaly = 0\n", "retention_anomaly")
+  end
+
+  test "rejects an invalid heartbeat interval" do
+    assert_invalid_setting("heartbeat_interval = 0\n", "heartbeat_interval")
+  end
+
+  test "rejects invalid ingest rate limits" do
+    assert_invalid_setting("[ingest_rate_limit]\nrate = 0\n", "ingest_rate")
+    assert_invalid_setting("[ingest_rate_limit]\nburst = 0\n", "ingest_burst")
+  end
+
+  test "rejects invalid authentication exemptions" do
+    assert_invalid_setting("auth_exemptions = [\"/metrics\"]\n", "auth_exemptions")
+  end
+
+  test "rejects invalid credentials" do
+    assert_invalid_setting("[ingest]\ntoken = \"\"\n", "ingest_credentials")
+  end
+
+  test "rejects credentials shared by ingest and Control API" do
+    assert_invalid_setting(
+      ~S"""
+      [ingest]
+      token = "same"
+      [control_api]
+      token = "same"
+      """,
+      "distinct_credentials"
+    )
+  end
+
+  defp assert_invalid_setting(source, setting) do
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:shutdown, {:invalid_configuration, errors}} = catch_exit(Config.load(source, %{}))
+        assert String.to_atom(setting) in errors
+      end)
+
+    assert log =~ "invalid configuration setting: #{setting}"
   end
 end
