@@ -5,10 +5,25 @@ defmodule Autoangel.StateStoreTest do
     path =
       Path.join(System.tmp_dir!(), "autoangel-state-test-#{System.unique_integer([:positive])}")
 
-    {:ok, store} = Autoangel.StateStore.start_link(path: path)
-    on_exit(fn -> File.rm_rf!(path) end)
+    {:ok, store} = Autoangel.StateStore.start_link(path: path, name: nil)
+
+    on_exit(fn ->
+      safe_stop(store)
+      File.rm_rf!(path)
+    end)
+
     %{store: store, path: path}
   end
+
+  # Stop a GenServer during teardown without failing the test if it is already
+  # exiting (a linked store may receive :shutdown before on_exit runs).
+  defp safe_stop(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_stop(_), do: :ok
 
   test "restores the current checkpoint and removes the old generation", %{store: store} do
     assert :ok =
@@ -31,7 +46,7 @@ defmodule Autoangel.StateStoreTest do
     assert {:ok, 0.5} = Autoangel.StateStore.get_record(store, {:sensitivity, "s-1"})
 
     GenServer.stop(store)
-    {:ok, reopened} = Autoangel.StateStore.start_link(path: path)
+    {:ok, reopened} = Autoangel.StateStore.start_link(path: path, name: nil)
     assert {:ok, %{open: true}} = Autoangel.StateStore.get_record(reopened, {:incident, "i-1"})
     GenServer.stop(reopened)
   end

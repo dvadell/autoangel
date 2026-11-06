@@ -3,18 +3,32 @@ defmodule Autoangel.SeriesRegistryTest do
   use ExUnitProperties
 
   setup do
-    if Process.whereis(Autoangel.SeriesRegistry), do: GenServer.stop(Autoangel.SeriesRegistry)
-
-    {:ok, pid} =
-      Autoangel.SeriesRegistry.start_link(per_metric_limit: 2, total_limit: 3, pool_size: 4)
-
-    Process.unlink(pid)
+    start_registry!(per_metric_limit: 2, total_limit: 3, pool_size: 4)
 
     on_exit(fn ->
       if registry = Process.whereis(Autoangel.SeriesRegistry), do: GenServer.stop(registry)
     end)
 
     :ok
+  end
+
+  # Start the (default-named) SeriesRegistry, tolerating a lingering instance from
+  # an interleaved async:false suite whose teardown raced this setup. Stops any
+  # running registry first and retries once on {:already_started}.
+  defp start_registry!(opts) do
+    if pid = Process.whereis(Autoangel.SeriesRegistry), do: GenServer.stop(pid)
+
+    case Autoangel.SeriesRegistry.start_link(opts) do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        pid
+
+      {:error, {:already_started, running}} ->
+        GenServer.stop(running)
+        {:ok, pid} = Autoangel.SeriesRegistry.start_link(opts)
+        Process.unlink(pid)
+        pid
+    end
   end
 
   test "canonical identity ignores label order and is deterministic" do
@@ -212,17 +226,7 @@ defmodule Autoangel.SeriesRegistryTest do
 
       # A fresh registry per run with ample room so a single key is always admitted and
       # the second resolve always exercises the existing-series override path.
-      if Process.whereis(Autoangel.SeriesRegistry),
-        do: GenServer.stop(Autoangel.SeriesRegistry)
-
-      {:ok, pid} =
-        Autoangel.SeriesRegistry.start_link(
-          per_metric_limit: 4,
-          total_limit: 4,
-          pool_size: 4
-        )
-
-      Process.unlink(pid)
+      start_registry!(per_metric_limit: 4, total_limit: 4, pool_size: 4)
 
       key = Autoangel.SeriesRegistry.canonical_key(name, labels)
 
@@ -303,12 +307,9 @@ defmodule Autoangel.SeriesRegistryTest do
       assert reference.id == Autoangel.SeriesRegistry.series_id(first)
       assert reference.worker == Autoangel.SeriesRegistry.worker_index(first, 4)
 
-      GenServer.stop(Autoangel.SeriesRegistry)
+      # Simulate a restart: the helper stops the running registry and starts a fresh one.
+      start_registry!(per_metric_limit: 2, total_limit: 3, pool_size: 4)
 
-      {:ok, pid} =
-        Autoangel.SeriesRegistry.start_link(per_metric_limit: 2, total_limit: 3, pool_size: 4)
-
-      Process.unlink(pid)
       assert {:created, restarted} = Autoangel.SeriesRegistry.resolve_or_create(first)
       assert restarted.id == reference.id
       assert restarted.worker == reference.worker
@@ -329,17 +330,7 @@ defmodule Autoangel.SeriesRegistryTest do
           ) do
       # Each property run uses a freshly started registry with generated limits so the
       # limits under test are the generated ones, not the shared setup fixture.
-      if Process.whereis(Autoangel.SeriesRegistry),
-        do: GenServer.stop(Autoangel.SeriesRegistry)
-
-      {:ok, pid} =
-        Autoangel.SeriesRegistry.start_link(
-          per_metric_limit: per_metric_limit,
-          total_limit: total_limit,
-          pool_size: 4
-        )
-
-      Process.unlink(pid)
+      start_registry!(per_metric_limit: per_metric_limit, total_limit: total_limit, pool_size: 4)
 
       # Build a pool of distinct keys across several metric names. The candidate key
       # count often exceeds both limits so that rejections actually occur.

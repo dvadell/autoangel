@@ -12,23 +12,42 @@ defmodule Autoangel.CheckpointerTest do
         "autoangel-checkpoint-test-#{System.unique_integer([:positive])}"
       )
 
-    {:ok, store} = StateStore.start_link(path: path)
+    # Start the StateStore unnamed so parallel async:false suites that also use a
+    # StateStore cannot collide on the default registered name during interleaved
+    # setup/teardown. The worker index is unique per run for the same reason
+    # (the Worker keeps per-index persistent_term keys).
+    {:ok, store} = StateStore.start_link(path: path, name: nil)
+
+    worker_index = System.unique_integer([:positive])
 
     {:ok, worker} =
-      Worker.start_link(index: 2, state_store: store, sweep_interval: 60_000)
+      Worker.start_link(index: worker_index, state_store: store, sweep_interval: 60_000)
 
     on_exit(fn ->
-      if Process.alive?(worker), do: GenServer.stop(worker)
-      if Process.alive?(store), do: GenServer.stop(store)
+      safe_stop(worker)
+      safe_stop(store)
+      :persistent_term.erase({Worker, worker_index})
+      :persistent_term.erase({Worker, :capacity, worker_index})
       File.rm_rf!(path)
     end)
 
-    %{store: store, worker: worker}
+    %{store: store, worker: worker, worker_index: worker_index}
   end
+
+  # Stop a GenServer during teardown without failing the test if it is already
+  # exiting (linked store/worker may receive :shutdown before on_exit runs).
+  defp safe_stop(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: GenServer.stop(pid)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_stop(_), do: :ok
 
   test "checkpoint restores only the worker's series before scoring", %{
     store: store,
-    worker: worker
+    worker: worker,
+    worker_index: worker_index
   } do
     state = State.encode(State.new())
     meta = %{series_key: {"requests", []}, status: :healthy, first_ts: 10}
@@ -46,7 +65,7 @@ defmodule Autoangel.CheckpointerTest do
     GenServer.stop(checkpointer)
 
     {:ok, restored} =
-      Worker.start_link(index: 2, state_store: store, sweep_interval: 60_000)
+      Worker.start_link(index: worker_index, state_store: store, sweep_interval: 60_000)
 
     assert %{meta: %{status: :healthy}} =
              Worker.series(restored, {"requests", []})
