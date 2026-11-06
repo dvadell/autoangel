@@ -282,8 +282,12 @@ defmodule Autoangel.Alert.PluginRunner do
     max(base + jitter, base - div(base, 5) + attempt)
   end
 
-  defp put_metric(state, key),
-    do: %{state | metrics: Map.update(state.metrics, key, 1, &(&1 + 1))}
+  defp put_metric(state, key) do
+    if key in [:success, :retryable, :permanent],
+      do: Autoangel.Metrics.plugin_delivery(state.plugin, key)
+
+    %{state | metrics: Map.update(state.metrics, key, 1, &(&1 + 1))}
+  end
 
   defp notify_observer(%{observer: observer, plugin: plugin} = state, outcome)
        when is_pid(observer) do
