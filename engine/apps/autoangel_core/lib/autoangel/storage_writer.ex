@@ -169,8 +169,18 @@ defmodule Autoangel.Storage.Writer do
     end
   end
 
-  defp put_item({queue, size, dropped, accepted}, _capacity, _kind, _item),
-    do: {queue, size, dropped, accepted}
+  # A non-Sample item at capacity still enqueues by evicting the oldest Sample to
+  # keep the count at or below capacity (Requirements 34.6, 34.7). Only when no
+  # Sample remains to drop is the new item itself dropped.
+  defp put_item({queue, size, dropped, accepted}, _capacity, kind, item) do
+    case drop_oldest_sample(queue) do
+      {:ok, queue} ->
+        {:queue.in({kind, item}, queue), size, dropped + 1, accepted + 1}
+
+      :none ->
+        {queue, size, dropped, accepted}
+    end
+  end
 
   defp drop_oldest_sample(queue), do: drop_oldest_sample(queue, :queue.out(queue), [])
 
