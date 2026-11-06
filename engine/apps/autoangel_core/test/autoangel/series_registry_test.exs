@@ -91,6 +91,167 @@ defmodule Autoangel.SeriesRegistryTest do
     assert %{per_metric: 0, total: 2} = Autoangel.SeriesRegistry.rejection_counts()
   end
 
+  # Independent oracle for the override property below. This re-derives the expected
+  # Series_Kind straight from the rule text (Property 7, requirements 5.1/5.2/5.3) and
+  # never calls Autoangel.SeriesKind, so the registry override assertions are a genuine
+  # cross-check rather than a tautology. It is intentionally duplicated here (rather
+  # than shared with Autoangel.SeriesKindTest) so each suite carries its own oracle.
+  defp override_reference_kind(name, type_hint, labels) do
+    case type_hint do
+      :counter -> :counter
+      :gauge -> :gauge
+      :histogram -> override_histogram_kind(name)
+      :summary -> override_summary_kind(name, labels)
+      _ -> override_suffix_kind(name)
+    end
+  end
+
+  defp override_histogram_kind(name) do
+    if override_ends_with_any?(name, ["_bucket", "_count", "_sum"]),
+      do: :counter,
+      else: :gauge
+  end
+
+  defp override_summary_kind(name, labels) do
+    cond do
+      Map.has_key?(labels, "quantile") -> :gauge
+      override_ends_with_any?(name, ["_count", "_sum"]) -> :counter
+      true -> :gauge
+    end
+  end
+
+  defp override_suffix_kind(name) do
+    if override_ends_with_any?(name, ["_total", "_count", "_sum", "_bucket"]),
+      do: :counter,
+      else: :gauge
+  end
+
+  # Case-sensitive end-suffix test, implemented independently via trailing bytes.
+  defp override_ends_with_any?(name, suffixes) do
+    Enum.any?(suffixes, fn suffix ->
+      suffix_size = byte_size(suffix)
+
+      byte_size(name) >= suffix_size and
+        binary_part(name, byte_size(name) - suffix_size, suffix_size) == suffix
+    end)
+  end
+
+  test "Property 7 override: a counter TYPE line changes an existing gauge Series" do
+    # **Validates: Requirements 5.1, 5.7** — a later TYPE line genuinely changes the
+    # kind of an EXISTING Series. This exercises the stateful registry path
+    # (resolve_or_create -> update_kind), not the pure infer/3 function.
+    key = Autoangel.SeriesRegistry.canonical_key("jobs", %{})
+
+    assert {:created, %{kind: :gauge}} = Autoangel.SeriesRegistry.resolve_or_create(key, :gauge)
+
+    assert {:existing, %{kind: :counter}} =
+             Autoangel.SeriesRegistry.resolve_or_create(key, :counter)
+
+    # The reverse direction also overrides: counter -> gauge on the same Series.
+    assert {:existing, %{kind: :gauge}} =
+             Autoangel.SeriesRegistry.resolve_or_create(key, :gauge)
+  end
+
+  test "Property 7 override: an untyped or nil later TYPE line is a no-op for an existing Series" do
+    # **Validates: Requirements 5.1, 5.7** — update_kind only re-infers for an explicit
+    # counter/gauge/histogram/summary hint; :untyped and nil keep the existing kind.
+    key = Autoangel.SeriesRegistry.canonical_key("jobs", %{})
+
+    assert {:created, %{kind: :counter}} =
+             Autoangel.SeriesRegistry.resolve_or_create(key, :counter)
+
+    assert {:existing, %{kind: :counter}} =
+             Autoangel.SeriesRegistry.resolve_or_create(key, :untyped)
+
+    assert {:existing, %{kind: :counter}} =
+             Autoangel.SeriesRegistry.resolve_or_create(key, nil)
+  end
+
+  property "Feature: v1, Property 7 override: a later TYPE line changes an existing Series kind" do
+    # **Validates: Requirements 5.1, 5.7**
+    #
+    # A Series is created with one TYPE hint, then re-resolved under the SAME canonical
+    # key with a second TYPE hint. The registry must:
+    #   * re-infer the kind from the second hint when it is one of
+    #     [:counter, :gauge, :histogram, :summary] (a real override), and
+    #   * keep the originally created kind when the second hint is :untyped or nil
+    #     (the override is a deliberate no-op).
+    #
+    # A single metric name with a fixed-shape label set keeps every run under the
+    # per-metric and total limits of the generated registry, so the created series is
+    # always admitted and the second call always lands on the existing-series path.
+    override_hint = member_of([:counter, :gauge, :histogram, :summary, :untyped, nil])
+
+    # Bias generated names toward the significant end-suffixes so the histogram,
+    # summary and suffix counter branches of the override path are actually exercised,
+    # not just the counter/gauge hints. A plain random string almost never ends in
+    # "_total"/"_count"/"_sum"/"_bucket".
+    name_gen =
+      gen all(
+            base <- string([?a..?z, ?A..?Z, ?0..?9, ?_], min_length: 1, max_length: 24),
+            suffix <- member_of(["", "_total", "_count", "_sum", "_bucket"])
+          ) do
+        base <> suffix
+      end
+
+    check all(
+            name <- name_gen,
+            labels <-
+              map_of(
+                string([?a..?z, ?A..?Z], min_length: 1, max_length: 6),
+                string([?a..?z, ?A..?Z, ?0..?9], min_length: 0, max_length: 6),
+                max_length: 3
+              ),
+            include_quantile <- boolean(),
+            quantile_value <- member_of(["0.5", "0.9", "0.99", "+Inf"]),
+            first_hint <- override_hint,
+            second_hint <- override_hint,
+            max_runs: 150
+          ) do
+      labels = if include_quantile, do: Map.put(labels, "quantile", quantile_value), else: labels
+
+      # A fresh registry per run with ample room so a single key is always admitted and
+      # the second resolve always exercises the existing-series override path.
+      if Process.whereis(Autoangel.SeriesRegistry),
+        do: GenServer.stop(Autoangel.SeriesRegistry)
+
+      {:ok, pid} =
+        Autoangel.SeriesRegistry.start_link(
+          per_metric_limit: 4,
+          total_limit: 4,
+          pool_size: 4
+        )
+
+      Process.unlink(pid)
+
+      key = Autoangel.SeriesRegistry.canonical_key(name, labels)
+
+      assert {:created, created} = Autoangel.SeriesRegistry.resolve_or_create(key, first_hint)
+      assert created.kind == override_reference_kind(name, first_hint, labels)
+
+      assert {:existing, overridden} =
+               Autoangel.SeriesRegistry.resolve_or_create(key, second_hint)
+
+      # Identity is preserved across the override: only the kind may change.
+      assert overridden.id == created.id
+      assert overridden.key == created.key
+      assert overridden.worker == created.worker
+
+      expected_kind =
+        if second_hint in [:counter, :gauge, :histogram, :summary] do
+          # A real override: the kind now reflects the second TYPE line.
+          override_reference_kind(name, second_hint, labels)
+        else
+          # :untyped / nil keep the originally created kind.
+          created.kind
+        end
+
+      assert overridden.kind == expected_kind
+
+      GenServer.stop(Autoangel.SeriesRegistry)
+    end
+  end
+
   property "Feature: v1, Property 5: canonical Series identity and Worker mapping" do
     # **Validates: Requirements 4.3, 48.1, 48.2**
     check all(
