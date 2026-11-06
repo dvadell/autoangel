@@ -91,6 +91,69 @@ defmodule Autoangel.SeriesRegistryTest do
     assert %{per_metric: 0, total: 2} = Autoangel.SeriesRegistry.rejection_counts()
   end
 
+  property "Feature: v1, Property 5: canonical Series identity and Worker mapping" do
+    # **Validates: Requirements 4.3, 48.1, 48.2**
+    check all(
+            name <- string([?a..?z, ?A..?Z, ?0..?9, ?_], min_length: 1, max_length: 40),
+            labels <-
+              map_of(
+                string([?a..?z, ?A..?Z, ?0..?9, ?_], min_length: 1, max_length: 12),
+                string(:utf8, min_length: 0, max_length: 20),
+                max_length: 8
+              ),
+            permutation_keys <- list_of(integer(), min_length: 8, max_length: 8),
+            pool_size <- integer(1..32)
+          ) do
+      labels_list = Map.to_list(labels)
+
+      permuted_labels =
+        labels_list
+        |> Enum.zip(Enum.take(permutation_keys, length(labels_list)))
+        |> Enum.sort_by(&elem(&1, 1))
+        |> Enum.map(&elem(&1, 0))
+
+      first = Autoangel.SeriesRegistry.canonical_key(name, labels)
+      second = Autoangel.SeriesRegistry.canonical_key(name, permuted_labels)
+      different = Autoangel.SeriesRegistry.canonical_key(name <> "_different", labels)
+
+      assert first == second
+      assert first != different
+
+      assert Autoangel.SeriesRegistry.canonical_binary(first) ==
+               Autoangel.SeriesRegistry.canonical_binary(second)
+
+      assert Autoangel.SeriesRegistry.canonical_binary(first) !=
+               Autoangel.SeriesRegistry.canonical_binary(different)
+
+      assert Autoangel.SeriesRegistry.series_id(first) ==
+               Autoangel.SeriesRegistry.series_id(second)
+
+      assert Autoangel.SeriesRegistry.series_id(first) !=
+               Autoangel.SeriesRegistry.series_id(different)
+
+      assert Autoangel.SeriesRegistry.worker_index(first, pool_size) ==
+               Autoangel.SeriesRegistry.worker_index(second, pool_size)
+
+      assert Autoangel.SeriesRegistry.worker_index(first, pool_size) in 0..(pool_size - 1)
+
+      assert Autoangel.SeriesRegistry.canonical_key(%{name: name, labels: permuted_labels}) == first
+
+      assert {:created, reference} = Autoangel.SeriesRegistry.resolve_or_create({name, labels})
+      assert reference.id == Autoangel.SeriesRegistry.series_id(first)
+      assert reference.worker == Autoangel.SeriesRegistry.worker_index(first, 4)
+
+      GenServer.stop(Autoangel.SeriesRegistry)
+
+      {:ok, pid} =
+        Autoangel.SeriesRegistry.start_link(per_metric_limit: 2, total_limit: 3, pool_size: 4)
+
+      Process.unlink(pid)
+      assert {:created, restarted} = Autoangel.SeriesRegistry.resolve_or_create(first)
+      assert restarted.id == reference.id
+      assert restarted.worker == reference.worker
+    end
+  end
+
   property "Feature: v1, Property 6: cardinality limits hold under concurrency" do
     # **Validates: Requirements 4.5, 8.2, 8.4, 8.5**
     check all(
