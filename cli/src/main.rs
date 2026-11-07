@@ -936,6 +936,42 @@ mod tests {
     }
 
     #[test]
+    fn textfile_write_leaves_no_temporary_artifacts() {
+        // The atomic write creates a dot-prefixed temp file, then renames it.
+        // After a successful write only the final file must remain, and its
+        // content must be complete — the atomicity itself (temp + fsync +
+        // rename) is enforced by write_textfile's implementation.
+        let directory =
+            std::env::temp_dir().join(format!("autoangel-cli-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("jobs.prom");
+        let metrics = RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 10,
+            duration_seconds: 2.0,
+            exit_code: 0,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+        };
+        write_textfile(&path, &metrics).unwrap();
+
+        let entries: Vec<String> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["jobs.prom".to_owned()],
+            "only the final file should remain, found {entries:?}"
+        );
+        // The final file holds the complete body (ends with a newline).
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains("autoangel_job_duration_seconds{job=\"job\"} 2"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn clap_requires_run_name_and_command() {
         assert!(Cli::try_parse_from(["autoangel", "run", "--name", "job", "--"]).is_err());
         assert!(Cli::try_parse_from(["autoangel", "run", "--", "true"]).is_err());
