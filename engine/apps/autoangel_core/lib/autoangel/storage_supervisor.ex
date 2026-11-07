@@ -18,12 +18,17 @@ defmodule Autoangel.Alert.Supervisor do
 
   @impl true
   def init(opts) do
+    plugins = Keyword.get(opts, :plugins, [])
+
     Supervisor.init(
       [
         {Autoangel.Alert.PluginSupervisor,
          Keyword.put(opts, :name, Autoangel.Alert.PluginSupervisor)},
         {Autoangel.Alert.Dispatcher,
-         [state_store: Keyword.get(opts, :state_store, Autoangel.StateStore), plugins: %{}]}
+         [
+           state_store: Keyword.get(opts, :state_store, Autoangel.StateStore),
+           plugins: plugins
+         ]}
       ],
       strategy: :one_for_one
     )

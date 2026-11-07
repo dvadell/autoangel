@@ -33,7 +33,7 @@ defmodule Autoangel.Workers.Worker do
   @moduledoc "Owns Series state, scores bounded batches, and runs missing-data sweeps."
   use GenServer
   require Logger
-  alias Autoangel.{Detect.Decision, Kernel, Kernel.Params, Kernel.State}
+  alias Autoangel.{Alert.Dispatcher, Detect.Decision, Kernel, Kernel.Params, Kernel.State}
   alias Autoangel.Exposition.Sample
 
   defstruct index: 0,
@@ -48,7 +48,8 @@ defmodule Autoangel.Workers.Worker do
             scrape_status_table: nil,
             now: nil,
             state_store: nil,
-            decision_cfg: %{}
+            decision_cfg: %{},
+            dispatcher: Dispatcher
 
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
@@ -106,7 +107,8 @@ defmodule Autoangel.Workers.Worker do
       scrape_status_table: Keyword.get(opts, :scrape_status_table),
       now: Keyword.get(opts, :now, fn -> System.system_time(:millisecond) end),
       state_store: Keyword.get(opts, :state_store),
-      decision_cfg: Keyword.get(opts, :decision_cfg, %{})
+      decision_cfg: Keyword.get(opts, :decision_cfg, %{}),
+      dispatcher: Keyword.get(opts, :dispatcher, Dispatcher)
     }
 
     :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
@@ -183,7 +185,8 @@ defmodule Autoangel.Workers.Worker do
             failing_targets: failing_targets
           })
 
-        {meta, _events} = Decision.step(series_state.meta, :missing_sweep, now, cfg)
+        {meta, events} = Decision.step(series_state.meta, :missing_sweep, now, cfg)
+        forward_events(state, events)
         Map.put(acc, key, %{series_state | meta: meta})
       end)
 
@@ -293,10 +296,56 @@ defmodule Autoangel.Workers.Worker do
     kind, reason -> {:error, {:kernel_throw, kind, reason}}
   end
 
-  defp apply_result({result, sample}, meta, state),
-    do: Decision.step(meta, result, receive_time(sample, state), decision_config(state)) |> elem(0)
+  defp apply_result({result, sample}, meta, state) do
+    {meta, events} =
+      Decision.step(meta, result, receive_time(sample, state), decision_config(state))
+
+    forward_events(state, events)
+    meta
+  end
 
   defp decision_config(state), do: state.decision_cfg
+
+  # Forwards detection lifecycle events to the alert Dispatcher so an anomaly can
+  # reach alert delivery. Only `:anomaly_started`/`:anomaly_resolved` are
+  # alert-relevant; status/other events are ignored. Forwarding is a pure
+  # side-effect: it never touches `meta` or `kernel_state`, so detection state is
+  # identical whether or not a Dispatcher is wired. When no Dispatcher process is
+  # running (e.g. unit/property tests, or Topology without the alert tree), this
+  # is a no-op, and a transient `:exit` during the cast is swallowed.
+  defp forward_events(%{dispatcher: nil}, _events), do: :ok
+
+  defp forward_events(%{dispatcher: dispatcher}, events) do
+    case alert_events(events) do
+      [] ->
+        :ok
+
+      relevant ->
+        if dispatcher_alive?(dispatcher) do
+          Enum.each(relevant, &send_event(dispatcher, &1))
+        end
+
+        :ok
+    end
+  end
+
+  defp alert_events(events) do
+    Enum.filter(events, fn
+      {:anomaly_started, _anomaly} -> true
+      {:anomaly_resolved, _anomaly} -> true
+      _ -> false
+    end)
+  end
+
+  defp dispatcher_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp dispatcher_alive?(name) when is_atom(name), do: is_pid(Process.whereis(name))
+  defp dispatcher_alive?(_), do: false
+
+  defp send_event(dispatcher, event) do
+    Dispatcher.event(dispatcher, event)
+  catch
+    :exit, _reason -> :ok
+  end
 
   defp new_series(key, sample) do
     kind = sample_kind(sample)

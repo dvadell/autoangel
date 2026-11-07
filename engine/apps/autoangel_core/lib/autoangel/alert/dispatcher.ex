@@ -145,28 +145,57 @@ defmodule Autoangel.Alert.Dispatcher do
 
   defp deliver_one(runners, name, alert) do
     case Map.get(runners, name) do
-      pid when is_pid(pid) ->
-        Task.start(fn ->
-          try do
-            _ = PluginRunner.enqueue(pid, alert)
-          catch
-            :exit, reason -> Logger.warning("alert plugin dispatch skipped: #{inspect(reason)}")
-          end
-        end)
-
-      _ ->
+      nil ->
         :ok
+
+      runner ->
+        dispatch_to_runner(runner, alert)
     end
   end
+
+  # A runner may be addressed either by pid or by a registered name (atom). Both
+  # are valid `GenServer.server()` references for `PluginRunner.enqueue/2`, which
+  # is a GenServer.call. When the target is a registered name that is not (yet)
+  # alive, the call exits with `:noproc`; we catch that so a transient
+  # unavailability never crashes the Dispatcher.
+  defp dispatch_to_runner(runner, alert) when is_pid(runner) or is_atom(runner) do
+    Task.start(fn ->
+      try do
+        _ = PluginRunner.enqueue(runner, alert)
+      catch
+        :exit, reason -> Logger.warning("alert plugin dispatch skipped: #{inspect(reason)}")
+      end
+    end)
+  end
+
+  defp dispatch_to_runner(_runner, _alert), do: :ok
 
   defp normalize_runners(runners) when is_map(runners), do: runners
 
   defp normalize_runners(runners) when is_list(runners) do
-    Map.new(runners, fn
-      {name, runner} -> {name, runner}
-      runner when is_pid(runner) -> {runner, runner}
-    end)
+    Map.new(runners, &normalize_runner/1)
   end
 
   defp normalize_runners(_), do: %{}
+
+  # Accepts the shapes a runners list may take: an explicit `{key, runner}`
+  # pair (runner is a pid or registered name), a bare pid (keyed by itself), or
+  # an enabled-plugin spec `%{name|module|config}` from which the policy key and
+  # the registered PluginRunner name are derived identically to
+  # `Autoangel.Alert.PluginSupervisor`.
+  defp normalize_runner({key, runner}), do: {key, runner}
+  defp normalize_runner(runner) when is_pid(runner), do: {runner, runner}
+
+  defp normalize_runner(%{module: module} = _spec) when is_atom(module) do
+    key = plugin_key(module)
+    {key, Module.concat(Autoangel.Alert.PluginRunner, key)}
+  end
+
+  # The policy key for a plugin: the module's last segment, underscored and
+  # atomized (e.g. `Autoangel.Plugin.Email` -> `:email`). This MUST match
+  # `Autoangel.Alert.PluginSupervisor.plugin_name/1` so the registered runner
+  # name the Dispatcher resolves is the one the supervisor started.
+  defp plugin_key(module) do
+    module |> Module.split() |> List.last() |> Macro.underscore() |> String.to_atom()
+  end
 end

@@ -43,7 +43,8 @@ defmodule Autoangel.Application do
              sweep_interval: seconds(config, [:missing_data, :sweep_interval], 15),
              scrape_status_table: :autoangel_scrape_status,
              queue_capacity: 20_000,
-             max_batch: 2
+             max_batch: 2,
+             dispatcher: Autoangel.Alert.Dispatcher
            )},
           {Autoangel.Correlator.Supervisor, []},
           {Autoangel.Alert.Supervisor, plugins: plugins, state_store: Autoangel.StateStore},
