@@ -946,3 +946,152 @@ mod tests {
         Cli::command().debug_assert();
     }
 }
+
+/// Property 64: the CLI is transparent to the wrapped command.
+///
+/// Validates Requirement 67.1 (arguments passed in order unchanged) and the
+/// exit-code mapping of 67.3/67.7 at the `run_command` boundary: any exit code
+/// in 0..=255 is recorded exactly, and a signal maps to `128 + signo`. The
+/// byte-for-byte stdout/stderr passthrough of 67.4/69.5 and "exits with the
+/// wrapped code regardless of push outcome" of 67.3 are covered end-to-end by
+/// the binary-level tests in `cli/tests/transparency.rs`.
+#[cfg(all(test, unix))]
+mod transparency_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::io::Read;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn run_args(command: Vec<OsString>, measure_resources: bool) -> RunArgs {
+        RunArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".to_owned()),
+                bearer_token: Some("token".to_owned()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: "job".to_owned(),
+            textfile_path: None,
+            measure_resources,
+            command,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Any exit code in 0..=255 chosen by the wrapped command is the exact
+        /// code recorded by the CLI, with resource measurement on or off so
+        /// both `wait_for_child` paths are exercised (Req 67.1, 67.3, 69.5).
+        #[test]
+        fn exit_code_is_passed_through_unchanged(code in 0u8..=255, measure in any::<bool>()) {
+            let args = run_args(
+                vec!["sh".into(), "-c".into(), format!("exit {code}").into()],
+                measure,
+            );
+            let measurement = run_command(&args).expect("command should run");
+            prop_assert_eq!(measurement.exit_code, i32::from(code));
+            prop_assert_eq!(measurement.cpu_seconds.is_some(), measure);
+            prop_assert_eq!(measurement.max_rss_bytes.is_some(), measure);
+        }
+
+        /// A wrapped command killed by a signal that the shell neither ignores
+        /// nor cannot deliver is reported as `128 + signo`, matching shell
+        /// convention, with measurement on or off (Req 67.7, 67.3, 69.5).
+        #[test]
+        fn signal_termination_maps_to_128_plus_signo(
+            signo in prop::sample::select(vec![6i32, 9, 15]),
+            measure in any::<bool>(),
+        ) {
+            // `ulimit -c 0` prevents SIGABRT (6) from writing a core file on
+            // hosts where core dumps are enabled.
+            let args = run_args(
+                vec!["sh".into(), "-c".into(), format!("ulimit -c 0; kill -{signo} $$; sleep 5").into()],
+                measure,
+            );
+            let measurement = run_command(&args).expect("command should run");
+            prop_assert_eq!(measurement.exit_code, 128 + signo);
+            prop_assert_eq!(measurement.cpu_seconds.is_some(), measure);
+            prop_assert_eq!(measurement.max_rss_bytes.is_some(), measure);
+        }
+
+        /// Arguments after `--` reach the wrapped command in order and
+        /// byte-for-byte unchanged, including shell metacharacters such as
+        /// quotes, `$`, backticks, `*` and `;`. The child echoes each
+        /// positional argument on its own line to a temp file, which the test
+        /// then compares against the input. Carriage return and newline are
+        /// excluded only because this readback is newline-delimited, not
+        /// because the CLI treats them specially (Req 67.1).
+        #[test]
+        fn arguments_reach_the_child_in_order_and_unchanged(
+            arguments in prop::collection::vec("[^\n\r\x00]{0,16}", 0..6)
+        ) {
+            let output = unique_temp_path("args");
+            // Remove any stale file from an earlier aborted run with the same name.
+            let _ = std::fs::remove_file(&output);
+            // The destination path is passed as $1 (never interpolated into the
+            // script) so paths containing quotes cannot break the command.
+            let script = "out=$1; shift; for a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$out\"; done";
+            let mut command: Vec<OsString> = vec![
+                "sh".into(),
+                "-c".into(),
+                script.into(),
+                "sh".into(),
+                output.clone().into_os_string(),
+            ];
+            for argument in &arguments {
+                command.push(OsString::from(argument));
+            }
+            let args = run_args(command, false);
+            let result = run_command(&args);
+            let cleanup = scopeguard_remove(&output);
+            let measurement = result.expect("command should run");
+            prop_assert_eq!(measurement.exit_code, 0);
+
+            let mut received = String::new();
+            if output.exists() {
+                std::fs::File::open(&output)
+                    .expect("temp file opens")
+                    .read_to_string(&mut received)
+                    .expect("temp file reads");
+            }
+            let seen: Vec<&str> = received.lines().collect();
+            prop_assert_eq!(seen.len(), arguments.len());
+            for (expected, actual) in arguments.iter().zip(seen.iter()) {
+                prop_assert_eq!(expected.as_str(), *actual);
+            }
+            drop(cleanup);
+        }
+    }
+
+    fn unique_temp_path(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("autoangel-{tag}-{}-{n}.txt", std::process::id()))
+    }
+
+    /// Returns a guard that removes `path` when dropped, so the temp file is
+    /// cleaned up even if an assertion fails and unwinds.
+    fn scopeguard_remove(path: &std::path::Path) -> impl Drop {
+        struct Guard(std::path::PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        Guard(path.to_path_buf())
+    }
+
+    /// The exit-code property relies on `ExitStatus::from_raw` reporting a
+    /// signal (no exit code) for a signal-terminated status; this pins that
+    /// standard-library behaviour the production mapping depends on.
+    #[test]
+    fn raw_signal_status_reports_signal_not_code() {
+        let status = std::process::ExitStatus::from_raw(15);
+        assert_eq!(status.code(), None);
+        assert_eq!(status.signal(), Some(15));
+    }
+}
