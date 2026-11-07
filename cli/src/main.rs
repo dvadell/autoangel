@@ -1415,3 +1415,214 @@ mod push_body_property_tests {
         Ok(pairs)
     }
 }
+
+/// Property 67: CLI argument validation agrees with the Engine grammar.
+///
+/// Validates Requirement 70.2 (NAME must be a valid Prometheus metric name and
+/// VALUE a valid sample value, else the push is rejected with no request) and
+/// 70.3 (each `--label` must be `name=value` with a valid Prometheus label
+/// name and no repeated names, else the push is rejected).
+///
+/// The oracle mirrors the Engine's grammar from
+/// `engine/apps/autoangel_core/lib/autoangel/exposition.ex`:
+///   metric name: `^[a-zA-Z_:][a-zA-Z0-9_:]*$`
+///   label name:  `^[a-zA-Z_][a-zA-Z0-9_]*$`
+/// It is written independently of `is_name` (explicit byte-range classes rather
+/// than shared `is_ascii_*` helpers) so a bug in one implementation is unlikely
+/// to be mirrored in the other.
+#[cfg(test)]
+mod validation_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Reference metric-name predicate matching the Engine's `@name` regex.
+    fn engine_metric_name(name: &str) -> bool {
+        engine_name(name, true)
+    }
+
+    /// Reference label-name predicate matching the Engine's `@label_name` regex.
+    fn engine_label_name(name: &str) -> bool {
+        engine_name(name, false)
+    }
+
+    fn engine_name(name: &str, colon: bool) -> bool {
+        let bytes = name.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        // Explicit byte-range classes, deliberately not sharing the
+        // is_ascii_* helpers used by production `is_name`, so a bug in one
+        // implementation is unlikely to be mirrored in the other.
+        let head_ok = |b: u8| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_') || (colon && b == b':');
+        let tail_ok = |b: u8| {
+            matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') || (colon && b == b':')
+        };
+        head_ok(bytes[0]) && bytes[1..].iter().all(|&b| tail_ok(b))
+    }
+
+    fn push_args(name: &str, value: &str, labels: Vec<String>) -> PushArgs {
+        PushArgs {
+            common: CommonArgs {
+                ingest_endpoint: Some("http://localhost".into()),
+                bearer_token: Some("token".into()),
+                basic_username: None,
+                basic_password: None,
+                attempt_timeout_secs: 10,
+                retry_duration_secs: 60,
+            },
+            name: name.to_owned(),
+            value: value.to_owned(),
+            labels,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// The CLI metric-name check agrees with the Engine grammar oracle for
+        /// arbitrary strings, including ones with colons, digits and symbols.
+        #[test]
+        fn metric_name_agrees_with_engine_grammar(
+            name in prop_oneof!["[a-zA-Z0-9_:]{0,12}", "[\\PC]{0,12}"]
+        ) {
+            prop_assert_eq!(is_valid_metric_name(&name), engine_metric_name(&name));
+        }
+
+        /// The CLI label-name check agrees with the Engine grammar oracle;
+        /// crucially, a colon is valid in a metric name but not a label name.
+        /// The generator mixes grammar-alphabet strings (so colon and digit
+        /// boundaries are hit often) with arbitrary non-control strings.
+        #[test]
+        fn label_name_agrees_with_engine_grammar(
+            name in prop_oneof!["[a-zA-Z0-9_:]{0,12}", "[\\PC]{0,12}"]
+        ) {
+            prop_assert_eq!(is_valid_label_name(&name), engine_label_name(&name));
+        }
+
+        /// Names drawn from the grammar's own alphabet are accepted by both the
+        /// CLI check and the oracle, so the agreement above is not vacuously
+        /// "both reject everything". Covers metric names (colon allowed) and
+        /// label names (colon not allowed).
+        #[test]
+        fn grammar_alphabet_names_are_accepted(
+            metric in "[a-zA-Z_:][a-zA-Z0-9_:]{0,12}",
+            label in "[a-zA-Z_][a-zA-Z0-9_]{0,12}"
+        ) {
+            prop_assert!(is_valid_metric_name(&metric));
+            prop_assert!(engine_metric_name(&metric));
+            prop_assert!(is_valid_label_name(&label));
+            prop_assert!(engine_label_name(&label));
+        }
+
+        /// 70.2: `tool push` validation accepts an invocation exactly when the
+        /// metric name and the sample value are both valid under the grammar
+        /// (with a well-formed, unique, valid label set). The expected VALUE
+        /// verdict is a literal table, not a call to the code under test, so
+        /// this does not merely check that `validate` calls `parse_sample_value`.
+        #[test]
+        fn push_validation_tracks_name_and_value_grammar(
+            name in prop_oneof!["[a-zA-Z0-9_:]{0,10}", "[\\PC]{0,10}"],
+            value_case in prop::sample::select(VALUE_CASES.to_vec()),
+        ) {
+            let (value, value_valid) = value_case;
+            let args = push_args(&name, value, vec![]);
+            let expected = engine_metric_name(&name) && value_valid;
+            prop_assert_eq!(args.validate().is_ok(), expected);
+        }
+
+        /// 70.3: a label argument is accepted exactly when it is `name=value`
+        /// with a grammar-valid, non-repeated name. The generator mixes clearly
+        /// valid `name=value` labels with arbitrary non-control strings so both
+        /// the accept and reject directions are exercised.
+        #[test]
+        fn push_validation_tracks_label_grammar(
+            raw_labels in prop::collection::vec(
+                prop_oneof![
+                    "[a-zA-Z_][a-zA-Z0-9_]{0,6}=[\\PC]{0,6}",
+                    "[a-zA-Z_:]{0,6}(=[\\PC]{0,4})?",
+                    "[\\PC]{0,10}",
+                ],
+                0..4,
+            )
+        ) {
+            let args = push_args("metric", "1", raw_labels.clone());
+
+            // Independent oracle: every label parses as name=value, each name
+            // is grammar-valid, and no name repeats.
+            let mut names_seen = std::collections::HashSet::new();
+            let mut oracle_ok = true;
+            for label in &raw_labels {
+                match label.split_once('=') {
+                    Some((label_name, _)) => {
+                        if !engine_label_name(label_name) || !names_seen.insert(label_name) {
+                            oracle_ok = false;
+                            break;
+                        }
+                    }
+                    None => {
+                        oracle_ok = false;
+                        break;
+                    }
+                }
+            }
+            prop_assert_eq!(args.validate().is_ok(), oracle_ok);
+        }
+
+        /// Unique, grammar-valid `name=value` labels are always accepted — the
+        /// positive control for the 70.3 reject-direction properties.
+        #[test]
+        fn unique_valid_labels_are_accepted(
+            names in prop::collection::vec("[a-zA-Z_][a-zA-Z0-9_]{0,6}", 0..4),
+            values in prop::collection::vec("[^\r\n\x00]{0,8}", 0..4),
+        ) {
+            let mut seen = std::collections::HashSet::new();
+            let mut labels = Vec::new();
+            for (name, value) in names.iter().zip(values.iter()) {
+                if seen.insert(name.clone()) {
+                    labels.push(format!("{name}={value}"));
+                }
+            }
+            let args = push_args("metric", "1", labels);
+            prop_assert!(args.validate().is_ok());
+        }
+
+        /// A repeated label name is always rejected, regardless of value
+        /// (Req 70.3), even when the name itself is grammar-valid.
+        #[test]
+        fn repeated_label_name_is_rejected(
+            name in "[a-zA-Z_][a-zA-Z0-9_]{0,6}",
+            a in "[^\r\n\x00]{0,6}",
+            b in "[^\r\n\x00]{0,6}",
+        ) {
+            let args = push_args(
+                "metric",
+                "1",
+                vec![format!("{name}={a}"), format!("{name}={b}")],
+            );
+            prop_assert!(args.validate().is_err());
+        }
+    }
+
+    /// VALUE tokens paired with the verdict the Engine grammar gives them,
+    /// stated literally so the property does not depend on `parse_sample_value`.
+    const VALUE_CASES: &[(&str, bool)] = &[
+        ("0", true),
+        ("-0", true),
+        ("1.5", true),
+        ("+1", true),
+        ("1e3", true),
+        ("1E5", true),
+        ("1.25e-2", true),
+        ("NaN", true),
+        ("+Inf", true),
+        ("-Inf", true),
+        ("", false),
+        ("inf", false),
+        ("nan", false),
+        (".5", false),
+        ("1.", false),
+        ("abc", false),
+        ("1e400", false),
+        ("0x1", false),
+    ];
+}
