@@ -1626,3 +1626,151 @@ mod validation_property_tests {
         ("0x1", false),
     ];
 }
+
+/// Property 68: CLI retries stay inside the retry duration.
+///
+/// Validates Requirement 68.4 (retry a failed push until success or until the
+/// configured retry duration has elapsed since the first attempt) and 68.5
+/// (when the window elapses without success, stop retrying and return failure).
+///
+/// `push_run` is called directly with `Config` values built in-process, which
+/// lets the property use sub-second retry windows (the CLI argument parser only
+/// accepts whole seconds) so many cases run quickly. Each case runs against a
+/// loopback server that always fails, and asserts the call returns `Err` no
+/// later than the retry window plus a bounded overrun of one in-flight attempt.
+#[cfg(all(test, unix))]
+mod retry_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    /// Start a loopback server that answers every connection with `503` until
+    /// stopped. Records the elapsed time (relative to `origin`) of each accepted
+    /// connection so the test can assert no attempt began after the deadline.
+    /// Returns the endpoint, a stop flag, the shared accept-times vector, and
+    /// the join handle.
+    #[allow(clippy::type_complexity)]
+    fn start_failing_server(
+        origin: Instant,
+    ) -> (
+        String,
+        Arc<AtomicBool>,
+        Arc<std::sync::Mutex<Vec<Duration>>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let endpoint = format!("http://{}/api/v1/push", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).expect("non-blocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let accept_times = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop_thread = Arc::clone(&stop);
+        let times_thread = Arc::clone(&accept_times);
+        let handle = std::thread::spawn(move || {
+            while !stop_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        times_thread.lock().unwrap().push(origin.elapsed());
+                        // Accepted sockets may inherit non-blocking mode on some
+                        // platforms; force blocking with a read timeout so the
+                        // request is drained without risking a hang.
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let mut buffer = [0u8; 2048];
+                        let _ = stream.read(&mut buffer);
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        let _ = stream.flush();
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (endpoint, stop, accept_times, handle)
+    }
+
+    fn config(endpoint: &str, retry: Duration, attempt: Duration) -> Config {
+        Config {
+            ingest_endpoint: endpoint.to_owned(),
+            credential: Credential::Bearer("token".into()),
+            attempt_timeout: attempt,
+            retry_duration: retry,
+        }
+    }
+
+    fn metrics() -> RunMetrics {
+        RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 1,
+            duration_seconds: 1.0,
+            exit_code: 0,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+        }
+    }
+
+    proptest! {
+        // Each case spends roughly one retry window, so keep the count modest.
+        #![proptest_config(ProptestConfig::with_cases(12))]
+
+        /// A push against an always-failing endpoint returns failure within the
+        /// retry window plus one in-flight attempt, and never before the window
+        /// is essentially used up (Req 68.4, 68.5).
+        #[test]
+        fn failing_push_stops_within_retry_window(retry_ms in 650u64..1300) {
+            let retry = Duration::from_millis(retry_ms);
+            // A short per-attempt timeout bounds the in-flight attempt when the
+            // deadline passes; the 503 reply is immediate so attempts are quick.
+            // The window is kept above the 500ms initial backoff so at least one
+            // retry fits inside it.
+            let attempt = Duration::from_millis(100);
+            let origin = Instant::now();
+            let (endpoint, stop, accept_times, handle) = start_failing_server(origin);
+
+            let started = Instant::now();
+            let result = push_run(&config(&endpoint, retry, attempt), &metrics());
+            let elapsed = started.elapsed();
+
+            stop.store(true, Ordering::Relaxed);
+            let _ = handle.join();
+
+            // 68.5: the window elapsed without success, so push_run reports the drop.
+            prop_assert_eq!(result, Err(PushError::Failed));
+            // 68.4: it did not keep retrying far past the window. Overrun bound
+            // is one in-flight attempt plus scheduling slack.
+            let upper = retry + attempt + Duration::from_millis(500);
+            prop_assert!(
+                elapsed <= upper,
+                "retried for {:?}, over the {:?} window + slack {:?}",
+                elapsed, retry, upper
+            );
+            // It genuinely used the window rather than giving up immediately.
+            prop_assert!(
+                elapsed >= retry,
+                "returned after {:?}, before the {:?} window",
+                elapsed, retry
+            );
+            // No attempt was started after the retry deadline. Attempts are
+            // recorded relative to `origin`, which is just before push_run's own
+            // start; allow a small slack for scheduling the accept.
+            let times = accept_times.lock().unwrap();
+            prop_assert!(!times.is_empty(), "the push was never attempted");
+            prop_assert!(times.len() >= 2, "the push was not retried; {} attempt(s)", times.len());
+            let deadline_slack = retry + Duration::from_millis(150);
+            for (index, at) in times.iter().enumerate() {
+                prop_assert!(
+                    *at <= deadline_slack,
+                    "attempt {} started at {:?}, after the {:?} deadline",
+                    index, at, deadline_slack
+                );
+            }
+        }
+    }
+}
