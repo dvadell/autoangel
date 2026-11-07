@@ -1095,3 +1095,323 @@ mod transparency_property_tests {
         assert_eq!(status.signal(), Some(15));
     }
 }
+
+/// Property 66: CLI push bodies are valid and share one run timestamp.
+///
+/// Validates Requirement 68.1 (one Sample per recorded measurement, identified
+/// by the run name), 68.2 (every Sample of a run carries the same explicit
+/// timestamp, taken from the run and not the push time), 68.6 (the textfile
+/// body carries the same measurements but omits per-Sample timestamps), 69.3
+/// (CPU time and max RSS, when measured, share the same run timestamp), and
+/// 70.1 (`tool push` builds exactly one Sample with the given name, value and
+/// labels).
+#[cfg(test)]
+mod push_body_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One parsed exposition line: metric name, the label block verbatim
+    /// (including braces) if present, the value token, and the optional
+    /// trailing timestamp token.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Sample {
+        name: String,
+        labels: Option<String>,
+        value: String,
+        timestamp: Option<String>,
+    }
+
+    /// Minimal Prometheus text-exposition parser: skips `# TYPE`/`# HELP`
+    /// comment lines and blank lines, and splits each Sample line into name,
+    /// optional `{...}` label block, value and optional timestamp. Returns an
+    /// error for any line it cannot parse, so a malformed body fails the test
+    /// rather than being silently ignored.
+    fn parse_samples(body: &str) -> Result<Vec<Sample>, String> {
+        let mut samples = Vec::new();
+        for line in body.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name_and_labels, rest) = split_metric_head(line)?;
+            let (name, labels) = match name_and_labels.split_once('{') {
+                Some((name, label_rest)) => {
+                    let block = label_rest
+                        .strip_suffix('}')
+                        .ok_or_else(|| format!("unterminated label block in `{line}`"))?;
+                    (name.to_owned(), Some(block.to_owned()))
+                }
+                None => (name_and_labels.to_owned(), None),
+            };
+            if !is_valid_metric_name(&name) {
+                return Err(format!("invalid metric name in `{line}`"));
+            }
+            let mut tokens = rest.split_whitespace();
+            let value = tokens
+                .next()
+                .ok_or_else(|| format!("missing value in `{line}`"))?
+                .to_owned();
+            parse_sample_value(&value)?;
+            let timestamp = tokens.next().map(str::to_owned);
+            if tokens.next().is_some() {
+                return Err(format!("trailing tokens in `{line}`"));
+            }
+            if let Some(ref stamp) = timestamp {
+                stamp
+                    .parse::<i64>()
+                    .map_err(|_| format!("non-integer timestamp in `{line}`"))?;
+            }
+            samples.push(Sample {
+                name,
+                labels,
+                value,
+                timestamp,
+            });
+        }
+        Ok(samples)
+    }
+
+    /// Split a Sample line into its "name and labels" head and the remainder,
+    /// respecting a `{...}` block whose label values are double-quoted and may
+    /// themselves contain `{`, `}`, spaces or escaped quotes.
+    fn split_metric_head(line: &str) -> Result<(&str, &str), String> {
+        if let Some(open) = line.find('{') {
+            // Find the closing brace that is not inside a quoted label value.
+            let mut in_quote = false;
+            let mut escaped = false;
+            let mut close = None;
+            for (offset, character) in line[open..].char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match character {
+                    '\\' if in_quote => escaped = true,
+                    '"' => in_quote = !in_quote,
+                    '}' if !in_quote => {
+                        close = Some(open + offset);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let close = close.ok_or_else(|| format!("unterminated label block in `{line}`"))?;
+            Ok((&line[..=close], line[close + 1..].trim_start()))
+        } else {
+            line.split_once(' ')
+                .map(|(head, rest)| (head, rest.trim_start()))
+                .ok_or_else(|| format!("missing value in `{line}`"))
+        }
+    }
+
+    fn metrics(
+        name: &str,
+        timestamp_ms: i64,
+        cpu_seconds: Option<f64>,
+        max_rss_bytes: Option<u64>,
+    ) -> RunMetrics {
+        RunMetrics {
+            name: name.to_owned(),
+            timestamp_ms,
+            duration_seconds: 1.5,
+            exit_code: 3,
+            cpu_seconds,
+            max_rss_bytes,
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        /// Every Sample in a run body is well-formed, identified by the run
+        /// name, and carries the one run timestamp; the measured samples appear
+        /// exactly when enabled (Req 68.1, 68.2, 69.3).
+        #[test]
+        fn run_body_samples_are_valid_and_share_one_timestamp(
+            name in "[a-zA-Z_][a-zA-Z0-9_ .\"\\\\-]{0,24}",
+            timestamp_ms in 0i64..4_000_000_000_000,
+            cpu in proptest::option::of(0.0f64..1000.0),
+            rss in proptest::option::of(0u64..u64::MAX),
+        ) {
+            let metrics = metrics(&name, timestamp_ms, cpu, rss);
+            let body = build_run_body(&metrics, true);
+            let samples = parse_samples(&body).expect("run body parses as exposition");
+
+            // 68.1: exactly one Sample per recorded measurement, no more.
+            let names: Vec<&str> = samples.iter().map(|s| s.name.as_str()).collect();
+            let expected_count = 3 + usize::from(cpu.is_some()) + usize::from(rss.is_some());
+            prop_assert_eq!(samples.len(), expected_count);
+            prop_assert!(names.contains(&"autoangel_job_duration_seconds"));
+            prop_assert!(names.contains(&"autoangel_job_exit_code"));
+            prop_assert!(names.contains(&"autoangel_job_success"));
+            prop_assert_eq!(
+                names.contains(&"autoangel_job_cpu_seconds"),
+                cpu.is_some()
+            );
+            prop_assert_eq!(
+                names.contains(&"autoangel_job_max_rss_bytes"),
+                rss.is_some()
+            );
+
+            // 68.2 / 69.3: every Sample carries the same explicit timestamp,
+            // and it is the run timestamp, not any push-time value.
+            let want = timestamp_ms.to_string();
+            for sample in &samples {
+                prop_assert_eq!(sample.timestamp.as_deref(), Some(want.as_str()));
+                // 68.1: each Sample is identified by the run name — the decoded
+                // label set is exactly {job: name}.
+                let pairs = parse_label_pairs(sample.labels.as_deref().unwrap_or(""))
+                    .expect("label block parses");
+                prop_assert_eq!(&pairs, &vec![("job".to_owned(), name.clone())]);
+            }
+        }
+
+        /// The textfile body carries the same Sample set but omits every
+        /// per-Sample timestamp (Req 68.6).
+        #[test]
+        fn textfile_body_omits_timestamps(
+            name in "[a-zA-Z_][a-zA-Z0-9_-]{0,16}",
+            timestamp_ms in 1i64..4_000_000_000_000,
+            cpu in proptest::option::of(0.0f64..1000.0),
+            rss in proptest::option::of(0u64..u64::MAX),
+        ) {
+            let metrics = metrics(&name, timestamp_ms, cpu, rss);
+            let with_ts = parse_samples(&build_run_body(&metrics, true))
+                .expect("timestamped body parses");
+            let without_ts = parse_samples(&build_run_body(&metrics, false))
+                .expect("textfile body parses");
+
+            // Same Samples — name, labels and value — in the same order; only
+            // the timestamp differs, and the textfile body has none.
+            prop_assert_eq!(with_ts.len(), without_ts.len());
+            for (ts, no_ts) in with_ts.iter().zip(without_ts.iter()) {
+                prop_assert_eq!(&ts.name, &no_ts.name);
+                prop_assert_eq!(&ts.labels, &no_ts.labels);
+                prop_assert_eq!(&ts.value, &no_ts.value);
+                prop_assert!(ts.timestamp.is_some());
+                prop_assert_eq!(no_ts.timestamp.as_deref(), None);
+            }
+        }
+
+        /// `tool push` builds exactly one Sample whose name, value and label
+        /// set — names and values — are exactly as given (Req 70.1).
+        #[test]
+        fn push_body_is_one_sample_with_given_name_value_and_labels(
+            name in "[a-zA-Z_:][a-zA-Z0-9_:]{0,20}",
+            value in prop::sample::select(vec![
+                "0", "-0", "1.5", "1.50", "+1", "1e3", "1E5", "1.25e-2",
+                "NaN", "+Inf", "-Inf",
+            ]),
+            label_names in prop::collection::vec("[a-zA-Z_][a-zA-Z0-9_]{0,8}", 0..4),
+            label_values in prop::collection::vec("[^\r\x00]{0,12}", 0..4),
+        ) {
+            // Build a label set with unique names (duplicates are rejected by
+            // validate(), which is the subject of task 17.8, not this one).
+            let mut seen = std::collections::HashSet::new();
+            let mut labels = Vec::new();
+            let mut expected: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            for (label_name, label_value) in label_names.iter().zip(label_values.iter()) {
+                if seen.insert(label_name.clone()) {
+                    labels.push(format!("{label_name}={label_value}"));
+                    expected.insert(label_name.clone(), label_value.clone());
+                }
+            }
+            let args = PushArgs {
+                common: CommonArgs {
+                    ingest_endpoint: Some("http://localhost".into()),
+                    bearer_token: Some("token".into()),
+                    basic_username: None,
+                    basic_password: None,
+                    attempt_timeout_secs: 10,
+                    retry_duration_secs: 60,
+                },
+                name: name.clone(),
+                value: value.to_owned(),
+                labels: labels.clone(),
+            };
+            prop_assume!(args.validate().is_ok());
+
+            let body = build_push_body(&args);
+            let samples = parse_samples(&body).expect("push body parses as exposition");
+            prop_assert_eq!(samples.len(), 1);
+            let sample = &samples[0];
+            prop_assert_eq!(&sample.name, &name);
+            prop_assert_eq!(sample.value.as_str(), value);
+            // A one-off push carries no timestamp.
+            prop_assert_eq!(sample.timestamp.as_deref(), None);
+
+            // 70.1: the decoded label set equals the given names and values
+            // exactly, with no extra, missing or duplicated labels.
+            let pairs = parse_label_pairs(sample.labels.as_deref().unwrap_or(""))
+                .expect("label block parses");
+            prop_assert_eq!(pairs.len(), expected.len());
+            let rendered: std::collections::HashMap<String, String> =
+                pairs.into_iter().collect();
+            prop_assert_eq!(rendered, expected);
+        }
+    }
+
+    /// Parse a rendered label block of the form `name="value",name="value"`
+    /// into `(name, decoded_value)` pairs. Label values are double-quoted and
+    /// use the Prometheus escapes `\\`, `\"` and `\n`; any other escape, an
+    /// invalid label name, a missing quote, or a missing comma between pairs is
+    /// a parse error, so a malformed block fails the test rather than being
+    /// accepted silently.
+    fn parse_label_pairs(block: &str) -> Result<Vec<(String, String)>, String> {
+        let mut pairs = Vec::new();
+        let mut chars = block.chars().peekable();
+        while chars.peek().is_some() {
+            // Read the label name up to '='.
+            let mut name = String::new();
+            let mut saw_equals = false;
+            for character in chars.by_ref() {
+                if character == '=' {
+                    saw_equals = true;
+                    break;
+                }
+                name.push(character);
+            }
+            if !saw_equals {
+                return Err(format!("label `{name}` has no value"));
+            }
+            if !is_valid_label_name(&name) {
+                return Err(format!("invalid label name `{name}`"));
+            }
+            // Expect an opening quote.
+            if chars.next_if_eq(&'"').is_none() {
+                return Err(format!("label `{name}` value is not quoted"));
+            }
+            // Consume and decode the quoted value.
+            let mut value = String::new();
+            let mut closed = false;
+            while let Some(character) = chars.next() {
+                match character {
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    '\\' => match chars.next() {
+                        Some('\\') => value.push('\\'),
+                        Some('"') => value.push('"'),
+                        Some('n') => value.push('\n'),
+                        other => {
+                            return Err(format!("invalid escape `\\{other:?}` in label `{name}`"))
+                        }
+                    },
+                    other => value.push(other),
+                }
+            }
+            if !closed {
+                return Err(format!("unterminated value for label `{name}`"));
+            }
+            pairs.push((name, value));
+            // A following pair must be separated by a comma.
+            match chars.next() {
+                Some(',') => {}
+                Some(other) => return Err(format!("unexpected `{other}` after label value")),
+                None => break,
+            }
+        }
+        Ok(pairs)
+    }
+}
