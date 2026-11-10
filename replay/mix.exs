@@ -5,7 +5,7 @@ defmodule AutoangelReplay.MixProject do
     [
       app: :autoangel_replay,
       version: "0.1.0",
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       deps: deps(),
       dialyzer: [plt_add_apps: [:mix], flags: [:error_handling, :underspecs]]
     ]
