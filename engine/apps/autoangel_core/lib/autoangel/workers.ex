@@ -45,6 +45,7 @@ defmodule Autoangel.Workers.Worker do
             max_batch: 2,
             kernel_params: %Params{},
             sweep_ref: nil,
+            sweep_timer?: true,
             sweep_interval: 15_000,
             scrape_status_table: nil,
             now: nil,
@@ -119,6 +120,7 @@ defmodule Autoangel.Workers.Worker do
       max_batch: Keyword.get(opts, :max_batch, 2),
       kernel_params: Keyword.get(opts, :kernel_params, %Params{}),
       sweep_interval: interval,
+      sweep_timer?: Keyword.get(opts, :sweep_timer, true),
       scrape_status_table: Keyword.get(opts, :scrape_status_table),
       now: Keyword.get(opts, :now, fn -> System.system_time(:millisecond) end),
       state_store: Keyword.get(opts, :state_store),
@@ -667,8 +669,15 @@ defmodule Autoangel.Workers.Worker do
   defp kernel_sample({_, value, ts, nil}, fallback), do: {ts, value, fallback}
   defp kernel_sample({_, value, ts, kind}, _), do: {ts, value, kind}
 
-  defp schedule_sweep(state),
-    do: %{state | sweep_ref: Process.send_after(self(), :sweep, state.sweep_interval)}
+  # One sweep timer at a time: any pending timer is cancelled before a new one
+  # is set. With `sweep_timer: false` (simulated time) no timer runs and the
+  # driver of simulated time sends `:sweep` itself.
+  defp schedule_sweep(%{sweep_timer?: false} = state), do: state
+
+  defp schedule_sweep(state) do
+    if state.sweep_ref, do: Process.cancel_timer(state.sweep_ref)
+    %{state | sweep_ref: Process.send_after(self(), :sweep, state.sweep_interval)}
+  end
 
   defp reserve_counter(nil, _count, _capacity), do: true
 

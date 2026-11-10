@@ -15,7 +15,8 @@ defmodule Autoangel.Correlator.Supervisor do
         :support_threshold,
         :pair_cap,
         :dispatcher,
-        :storage_writer
+        :storage_writer,
+        :now
       ])
       |> Keyword.put(:name, Autoangel.Correlate)
 
@@ -42,7 +43,7 @@ defmodule Autoangel.Alert.Supervisor do
          [
            state_store: Keyword.get(opts, :state_store, Autoangel.StateStore),
            plugins: plugins
-         ] ++ Keyword.take(opts, [:console_base_url, :max_candidates])}
+         ] ++ Keyword.take(opts, [:console_base_url, :max_candidates, :now])}
       ],
       strategy: :one_for_one
     )

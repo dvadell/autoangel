@@ -24,7 +24,15 @@ defmodule AutoangelReplay.Series do
   def display(%__MODULE__{name: name, labels: labels}) when map_size(labels) == 0, do: name
 
   def display(%__MODULE__{name: name, labels: labels}) do
-    inner = labels |> Enum.sort() |> Enum.map_join(",", fn {k, v} -> ~s(#{k}="#{v}") end)
+    inner = labels |> Enum.sort() |> Enum.map_join(",", fn {k, v} -> ~s(#{k}="#{escape(v)}") end)
     "#{name}{#{inner}}"
+  end
+
+  # Label values are escaped as in the Prometheus text exposition format.
+  defp escape(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
+    |> String.replace("\n", "\\n")
   end
 end

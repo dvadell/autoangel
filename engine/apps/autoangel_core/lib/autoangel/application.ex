@@ -21,6 +21,9 @@ defmodule Autoangel.Application do
     # Only a configured backend has a Storage_Writer (none in Topology_A).
     storage_writer = if storage == :none, do: nil, else: Autoangel.Storage.Writer
     plugins = Map.get(config, :enabled_plugins, [])
+    # A replay or test may supply a simulated clock (a 0-arity fun returning ms)
+    # through `config :autoangel_core, :now`; production uses system time.
+    clock = clock_opts()
     common = [config: config, pool_size: pool_size]
 
     children =
@@ -48,17 +51,20 @@ defmodule Autoangel.Application do
              max_batch: 2,
              dispatcher: Autoangel.Alert.Dispatcher,
              storage_writer: storage_writer
-           )},
+           )}
+          |> with_clock(clock),
           {Autoangel.Correlator.Supervisor,
            window_ms: seconds(config, [:correlation, :window], 600),
            pool_limit: get_in(config, [:correlation, :candidate_pool_limit]) || 20,
            support_threshold: get_in(config, [:correlation, :support_threshold]) || 2,
-           storage_writer: storage_writer},
+           storage_writer: storage_writer}
+          |> with_clock(clock),
           {Autoangel.Alert.Supervisor,
            plugins: plugins,
            state_store: Autoangel.StateStore,
            console_base_url: get_in(config, [:alerts, :console_base_url]),
-           max_candidates: get_in(config, [:alerts, :max_candidates]) || 5},
+           max_candidates: get_in(config, [:alerts, :max_candidates]) || 5}
+          |> with_clock(clock),
           {Autoangel.Feedback,
            state_store: Autoangel.StateStore, base_sensitivity: get_in(config, [:sensitivity])},
           storage_child(storage, config),
@@ -144,6 +150,17 @@ defmodule Autoangel.Application do
       {:error, reason} -> exit({:shutdown, {:invalid_storage_configuration, reason}})
     end
   end
+
+  defp clock_opts do
+    case Application.get_env(:autoangel_core, :now) do
+      # Under a simulated clock, real-time sweep timers would fire at arbitrary
+      # simulated instants; the driver of simulated time sends sweeps instead.
+      now when is_function(now, 0) -> [now: now, sweep_timer: false]
+      _ -> []
+    end
+  end
+
+  defp with_clock({module, opts}, clock), do: {module, opts ++ clock}
 
   defp storage_child(:none, _config), do: nil
 

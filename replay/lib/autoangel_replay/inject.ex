@@ -160,9 +160,10 @@ defmodule AutoangelReplay.Inject do
     end
   end
 
-  # Spikes and drops are short; level shifts, silences and drifts are sustained,
-  # using up to the whole room of the slot.
-  defp width(type, room, rng) when type in [:spike, :drop], do: cap(uniform_int(1, 3, rng), room)
+  # Spikes and drops are short, but at least three Samples so they can satisfy
+  # the Engine's default Persistence_Rule; level shifts, silences and drifts are
+  # sustained, using up to the whole room of the slot.
+  defp width(type, room, rng) when type in [:spike, :drop], do: cap(uniform_int(3, 5, rng), room)
 
   defp width(_sustained, room, rng),
     do: cap(uniform_int(max(div(room, 2), 4), max(room, 4), rng), room)

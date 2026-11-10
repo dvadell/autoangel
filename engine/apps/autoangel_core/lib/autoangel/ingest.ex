@@ -63,7 +63,7 @@ defmodule Autoangel.Ingest do
 
   @spec process_samples([Sample.t()], keyword()) :: {:ok, map()} | {:error, :overloaded}
   def process_samples(samples, opts \\ []) when is_list(samples) do
-    receive_time = Keyword.get(opts, :receive_time, System.system_time(:millisecond))
+    receive_time = Keyword.get_lazy(opts, :receive_time, &Autoangel.Clock.now_ms/0)
     samples = Enum.map(samples, &stamp(&1, receive_time))
     grouped = Enum.group_by(samples, &worker_index(&1, opts))
 
