@@ -45,6 +45,27 @@ defmodule AutoangelTsdb do
     do: with_conn(handle, fn conn -> conn |> write_band_rows(rows) |> outcome() end)
 
   @impl true
+  def write_heartbeat(handle, ts_ms, version) do
+    with_conn(handle, fn conn ->
+      conn
+      |> query("INSERT INTO engine_status (ts, version) VALUES ($1, $2)", [
+        timestamp(ts_ms),
+        to_string(version)
+      ])
+      |> outcome()
+    end)
+  end
+
+  @impl true
+  def prune_heartbeats(handle, before_ms) do
+    with_conn(handle, fn conn ->
+      conn
+      |> query("DELETE FROM engine_status WHERE ts < $1", [timestamp(before_ms)])
+      |> outcome()
+    end)
+  end
+
+  @impl true
   def read_range(handle, series_ids, from, to) do
     with_conn(handle, fn conn ->
       sql =

@@ -34,7 +34,7 @@ defmodule AutoangelTsdb.StoredCandidatesPropertyTest do
            Postgrex.start_link(@conn_opts ++ [parameters: [search_path: "#{schema},public"]]) do
       {:ok, _} = Postgrex.query(conn, "CREATE SCHEMA #{schema}", [])
       {:ok, _} = Postgrex.query(conn, "SET search_path TO #{schema}, public", [])
-      {:ok, 2} = AutoangelTsdb.migrate(conn)
+      {:ok, 3} = AutoangelTsdb.migrate(conn)
       rows = for key <- [@target | @pool], do: Rows.series(key, :gauge, :healthy)
       :ok = AutoangelTsdb.write_series(conn, rows)
 

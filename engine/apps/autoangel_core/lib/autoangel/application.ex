@@ -149,6 +149,7 @@ defmodule Autoangel.Application do
     {Autoangel.Storage.Supervisor,
      backend: backend,
      backend_config: Map.get(config, :storage, %{}),
+     heartbeat_interval_ms: seconds(config, [:heartbeat_interval], 15),
      self_monitor: Autoangel.SelfMonitor}
   end
 

@@ -363,7 +363,18 @@ defmodule Autoangel.Storage.Supervisor do
       |> Keyword.put(:name, writer_name)
       |> Keyword.put_new(:migration_ready, true)
 
-    children = [{Autoangel.Storage.Writer, writer_opts}]
+    heartbeat_opts =
+      opts
+      |> Keyword.take([:backend, :backend_config])
+      |> Keyword.put(:interval_ms, Keyword.get(opts, :heartbeat_interval_ms))
+      |> Keyword.put(:name, Keyword.get(opts, :heartbeat_name, Autoangel.Storage.Heartbeat))
+
+    # The Heartbeat starts after the Writer, whose init has applied migrations.
+    children = [
+      {Autoangel.Storage.Writer, writer_opts},
+      {Autoangel.Storage.Heartbeat, heartbeat_opts}
+    ]
+
     Supervisor.init(children, strategy: :one_for_one)
   end
 end

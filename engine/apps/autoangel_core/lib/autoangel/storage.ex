@@ -20,6 +20,14 @@ defmodule Autoangel.Storage do
   @callback read_aggregates(handle(), [term()], term(), term(), :minute | :hour) ::
               {:ok, [term()]} | {:retryable, term()} | {:permanent, term()}
 
+  @doc "Inserts one Heartbeat row holding `ts_ms` and the running Engine version."
+  @callback write_heartbeat(handle(), ts_ms :: integer(), version :: String.t()) :: outcome()
+
+  @doc "Deletes Heartbeat rows older than `before_ms`."
+  @callback prune_heartbeats(handle(), before_ms :: integer()) :: outcome()
+
+  @optional_callbacks write_heartbeat: 3, prune_heartbeats: 2
+
   @callbacks [
     {:init, 1},
     {:append_samples, 2},

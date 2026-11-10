@@ -126,7 +126,7 @@ defmodule AutoangelTsdb.IntegrationTest do
       skip_or(ctx, fn %{conn: conn, schema: schema} ->
         assert {:ok, version} = AutoangelTsdb.migrate(conn)
         assert version == Migrations.version()
-        assert version == 2
+        assert version == 3
 
         # schema_version row records the applied contract version.
         assert version == stored_version(conn)
@@ -151,7 +151,7 @@ defmodule AutoangelTsdb.IntegrationTest do
     # Requirement 38.9: re-running migrations is a no-op and preserves stored data.
     test "re-running migrations is a no-op and leaves stored rows untouched", ctx do
       skip_or(ctx, fn %{conn: conn, schema: schema} ->
-        assert {:ok, 2} = AutoangelTsdb.migrate(conn)
+        assert {:ok, 3} = AutoangelTsdb.migrate(conn)
 
         tables_before = table_set(conn, schema)
         version_before = stored_version(conn)
@@ -169,7 +169,7 @@ defmodule AutoangelTsdb.IntegrationTest do
 
         # Second run must succeed and change nothing structural.
         assert :ok = Migrations.run(conn)
-        assert {:ok, 2} = AutoangelTsdb.migrate(conn)
+        assert {:ok, 3} = AutoangelTsdb.migrate(conn)
 
         assert table_set(conn, schema) == tables_before
         assert stored_version(conn) == version_before
@@ -247,7 +247,7 @@ defmodule AutoangelTsdb.IntegrationTest do
     # Requirement 39.7: re-applying replaces the earlier windows instead of duplicating.
     test "applies retention/refresh policies and replaces them on re-apply", ctx do
       skip_or(ctx, fn %{conn: conn, schema: schema} ->
-        assert {:ok, 2} = AutoangelTsdb.migrate(conn)
+        assert {:ok, 3} = AutoangelTsdb.migrate(conn)
 
         first = %{retention: %{raw: 7 * 86_400, aggregate: 30 * 86_400, anomaly: 90 * 86_400}}
         assert {:ok, _results} = AutoangelTsdb.apply_retention_policies(conn, first)

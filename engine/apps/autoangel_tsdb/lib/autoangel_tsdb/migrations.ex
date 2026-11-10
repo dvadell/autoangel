@@ -1,10 +1,10 @@
 defmodule AutoangelTsdb.Migrations do
   @moduledoc "Idempotent, versioned SQL migrations owned by the Engine."
 
-  @schema_version 2
+  @schema_version 3
 
   @doc "The schema contract version supported by this backend."
-  @spec version() :: 2
+  @spec version() :: 3
   def version, do: @schema_version
 
   @doc "Runs every pending migration. Each version is committed only after success."
@@ -84,6 +84,20 @@ defmodule AutoangelTsdb.Migrations do
     Postgrex.transaction(conn, fn tx ->
       with :ok <- query_ok(tx, anomalies_v2_sql(), opts),
            :ok <- query_ok(tx, insert_version_sql(2), opts) do
+        :ok
+      else
+        {:error, reason} -> Postgrex.rollback(tx, reason)
+      end
+    end)
+    |> transaction_result()
+  end
+
+  # Version 3 names the engine_status columns as the design contract does,
+  # (ts, version), and indexes the latest Heartbeat (Requirement 41.2).
+  defp apply_one(conn, 3, opts) do
+    Postgrex.transaction(conn, fn tx ->
+      with :ok <- query_ok(tx, engine_status_v3_sql(), opts),
+           :ok <- query_ok(tx, insert_version_sql(3), opts) do
         :ok
       else
         {:error, reason} -> Postgrex.rollback(tx, reason)
@@ -179,6 +193,14 @@ defmodule AutoangelTsdb.Migrations do
     ALTER TABLE anomaly_candidates ADD CONSTRAINT anomaly_candidates_rank_check CHECK (rank >= 1);
     ALTER TABLE anomaly_candidates ADD PRIMARY KEY (anomaly_id, rank);
     ALTER TABLE anomaly_candidates ADD CONSTRAINT anomaly_candidates_series_unique UNIQUE (anomaly_id, series_id)
+    """
+  end
+
+  defp engine_status_v3_sql do
+    """
+    ALTER TABLE engine_status RENAME COLUMN heartbeat_at TO ts;
+    ALTER TABLE engine_status RENAME COLUMN engine_version TO version;
+    CREATE INDEX IF NOT EXISTS engine_status_ts_idx ON engine_status (ts DESC)
     """
   end
 

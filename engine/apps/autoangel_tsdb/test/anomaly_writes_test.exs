@@ -30,7 +30,7 @@ defmodule AutoangelTsdb.AnomalyWritesTest do
       schema = "aa_aw_#{System.system_time(:microsecond)}_#{:erlang.phash2(make_ref())}"
       {:ok, _} = Postgrex.query(conn, "CREATE SCHEMA #{schema}", [])
       {:ok, _} = Postgrex.query(conn, "SET search_path TO #{schema}, public", [])
-      {:ok, 2} = AutoangelTsdb.migrate(conn)
+      {:ok, 3} = AutoangelTsdb.migrate(conn)
 
       on_exit(fn ->
         with {:ok, c} <- Postgrex.start_link(@conn_opts) do
