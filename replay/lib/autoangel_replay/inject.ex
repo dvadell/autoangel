@@ -145,7 +145,7 @@ defmodule AutoangelReplay.Inject do
     room = div(to - from, 2)
     {width, rng} = width(type, room, rng)
 
-    if length(samples) < 10 or width < 1 or to > length(samples) do
+    if length(samples) < 10 or room < min_width(type) or to > length(samples) do
       {:skip, rng}
     else
       {start_i, rng} = uniform_int(from, from + room - width, rng)
@@ -169,6 +169,11 @@ defmodule AutoangelReplay.Inject do
     do: cap(uniform_int(max(div(room, 2), 4), max(room, 4), rng), room)
 
   defp cap({w, rng}, room), do: {min(w, room), rng}
+
+  # The smallest injection of a type that still has its shape: three Samples for
+  # spikes and drops (the default Persistence_Rule), four for sustained types.
+  defp min_width(type) when type in [:spike, :drop], do: 3
+  defp min_width(_sustained), do: 4
 
   @doc false
   def apply_type(type, samples, start_i, width, delta) do
