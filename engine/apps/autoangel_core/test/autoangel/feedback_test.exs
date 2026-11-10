@@ -26,9 +26,12 @@ defmodule Autoangel.FeedbackTest do
     @impl true
     def handle_call({:fail, v}, _from, s), do: {:reply, :ok, %{s | fail: v}}
     def handle_call({:fail_after, n}, _from, s), do: {:reply, :ok, %{s | allow: n}}
-    def handle_call({:put, _, _}, _from, %{fail: true} = s), do: {:reply, {:error, :disk_full}, s}
 
-    def handle_call({:put, _, _} = msg, _from, %{allow: n} = s) when is_integer(n) do
+    def handle_call(msg, _from, %{fail: true} = s) when elem(msg, 0) in [:put, :put_many],
+      do: {:reply, {:error, :disk_full}, s}
+
+    def handle_call(msg, _from, %{allow: n} = s)
+        when elem(msg, 0) in [:put, :put_many] and is_integer(n) do
       if n > 0,
         do: {:reply, GenServer.call(s.real, msg), %{s | allow: n - 1}},
         else: {:reply, {:error, :disk_full}, s}
@@ -180,11 +183,11 @@ defmodule Autoangel.FeedbackTest do
       assert Feedback.overrides(fb) == %{}
     end
 
-    test "a partial multi-Series write is rolled back" do
+    test "a multi-Series write is atomic: on failure nothing is stored" do
       real = tmp_store()
       {:ok, flaky} = FlakyStore.start_link(real)
       fb = start_feedback(flaky, known: [@key, @other])
-      FlakyStore.fail_after(flaky, 1)
+      FlakyStore.fail_after(flaky, 0)
 
       capture_log(fn ->
         assert {:error, :store_failed} = Feedback.apply(fb, "this was normal", %{incident_id: 7})

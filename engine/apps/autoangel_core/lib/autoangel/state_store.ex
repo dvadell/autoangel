@@ -43,6 +43,16 @@ defmodule Autoangel.StateStore do
   def put_sensitivity(server \\ __MODULE__, series_id, sensitivity),
     do: put_record(server, {:sensitivity, series_id}, sensitivity)
 
+  @doc "Writes several sensitivity overrides atomically: all are stored or none."
+  @spec put_sensitivities(GenServer.server(), [{term(), term()}]) :: :ok | {:error, term()}
+  def put_sensitivities(server \\ __MODULE__, entries) when is_list(entries),
+    do:
+      GenServer.call(
+        server,
+        {:put_many, Enum.map(entries, fn {id, v} -> {{:sensitivity, id}, v} end)},
+        :infinity
+      )
+
   @spec delete_sensitivity(GenServer.server(), term()) :: :ok | {:error, term()}
   def delete_sensitivity(server \\ __MODULE__, series_id),
     do: delete_record(server, {:sensitivity, series_id})
@@ -139,6 +149,10 @@ defmodule Autoangel.StateStore do
 
   def handle_call({:put, key, value}, _from, state) do
     {:reply, sync(fn -> CubDB.put(state.db, key, value) end), state}
+  end
+
+  def handle_call({:put_many, entries}, _from, state) do
+    {:reply, sync(fn -> CubDB.put_multi(state.db, entries) end), state}
   end
 
   def handle_call({:delete, key}, _from, state) do

@@ -25,6 +25,7 @@ defmodule Autoangel.HTTP.FeedbackEndpointTest do
     def init(_), do: {:ok, nil}
     @impl true
     def handle_call({:put, _, _}, _from, s), do: {:reply, {:error, :disk_full}, s}
+    def handle_call({:put_many, _}, _from, s), do: {:reply, {:error, :disk_full}, s}
     def handle_call({:records, _}, _from, s), do: {:reply, [], s}
   end
 

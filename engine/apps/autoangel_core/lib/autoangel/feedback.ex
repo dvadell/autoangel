@@ -11,8 +11,8 @@ defmodule Autoangel.Feedback do
     3. only then updates in-memory state (Dispatcher mutes, Worker overrides);
     4. replies.
 
-  If any State_Store write fails, writes already made for the request are rolled
-  back and memory is left unchanged.
+  The State_Store write for one request is atomic (all affected Series or
+  none), so on failure both the State_Store and memory are left unchanged.
 
   `mute` marks the Series or Incident muted. `this was normal` sets, for each
   affected Series, `override = min(current_or_base, max(base * 0.5, 0.25))`,
@@ -196,36 +196,10 @@ defmodule Autoangel.Feedback do
     {:reply, {:ok, %{action: action, target: target, series: Enum.map(refs, & &1.key)}}, state}
   end
 
-  # Writes each override; on the first failure, restores the values already
-  # written for this request so the State_Store matches the unchanged memory.
-  defp write_overrides(state, new_values) do
-    new_values
-    |> Enum.reduce_while([], &write_override(state, &1, &2))
-    |> case do
-      {:failed, written} ->
-        Enum.each(written, &rollback_override(state, &1))
-        :error
-
-      _written ->
-        :ok
-    end
-  end
-
-  defp write_override(state, {id, value}, written) do
-    case store(fn -> StateStore.put_sensitivity(state.store, id, value) end) do
-      :ok -> {:cont, [id | written]}
-      :error -> {:halt, {:failed, written}}
-    end
-  end
-
-  defp rollback_override(state, id) do
-    case Map.fetch(state.overrides, id) do
-      {:ok, previous} -> StateStore.put_sensitivity(state.store, id, previous)
-      :error -> StateStore.delete_sensitivity(state.store, id)
-    end
-  catch
-    :exit, _ -> :ok
-  end
+  # All overrides of one request are written in a single atomic State_Store
+  # operation, so a failure leaves the store exactly as it was (Req 30.8).
+  defp write_overrides(state, new_values),
+    do: store(fn -> StateStore.put_sensitivities(state.store, Map.to_list(new_values)) end)
 
   # A State_Store write counts as successful only on `:ok`; an error reply or
   # an unavailable store is a failure (Requirement 30.8).
