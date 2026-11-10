@@ -18,6 +18,8 @@ defmodule Autoangel.Application do
         "data/state"
 
     storage = configured_storage(config)
+    # Only a configured backend has a Storage_Writer (none in Topology_A).
+    storage_writer = if storage == :none, do: nil, else: Autoangel.Storage.Writer
     plugins = Map.get(config, :enabled_plugins, [])
     common = [config: config, pool_size: pool_size]
 
@@ -44,12 +46,14 @@ defmodule Autoangel.Application do
              scrape_status_table: :autoangel_scrape_status,
              queue_capacity: 20_000,
              max_batch: 2,
-             dispatcher: Autoangel.Alert.Dispatcher
+             dispatcher: Autoangel.Alert.Dispatcher,
+             storage_writer: storage_writer
            )},
           {Autoangel.Correlator.Supervisor,
            window_ms: seconds(config, [:correlation, :window], 600),
            pool_limit: get_in(config, [:correlation, :candidate_pool_limit]) || 20,
-           support_threshold: get_in(config, [:correlation, :support_threshold]) || 2},
+           support_threshold: get_in(config, [:correlation, :support_threshold]) || 2,
+           storage_writer: storage_writer},
           {Autoangel.Alert.Supervisor,
            plugins: plugins,
            state_store: Autoangel.StateStore,
@@ -63,7 +67,8 @@ defmodule Autoangel.Application do
           {Autoangel.Checkpointer,
            state_store: Autoangel.StateStore,
            workers_supervisor: Autoangel.Workers,
-           interval_ms: seconds(config, [:checkpoint_interval], 60)},
+           interval_ms: seconds(config, [:checkpoint_interval], 60),
+           storage_writer: storage_writer},
           Supervisor.child_spec(
             {Autoangel.HTTP.Listener,
              Keyword.merge(common, role: :ingest, name: Autoangel.HTTP.IngestListener)},

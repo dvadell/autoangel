@@ -33,14 +33,16 @@ defmodule AutoangelTsdb do
   def append_samples(conn, samples) when is_pid(conn), do: write_samples(conn, samples)
 
   @impl true
-  def write_series(handle, rows), do: with_conn(handle, fn conn -> upsert_series(conn, rows) end)
+  def write_series(handle, rows),
+    do: with_conn(handle, fn conn -> conn |> upsert_series(rows) |> outcome() end)
 
   @impl true
   def write_anomalies(handle, rows),
     do: with_conn(handle, fn conn -> write_anomaly_rows(conn, rows) end)
 
   @impl true
-  def write_bands(handle, rows), do: with_conn(handle, fn conn -> write_band_rows(conn, rows) end)
+  def write_bands(handle, rows),
+    do: with_conn(handle, fn conn -> conn |> write_band_rows(rows) |> outcome() end)
 
   @impl true
   def read_range(handle, series_ids, from, to) do
@@ -169,7 +171,9 @@ defmodule AutoangelTsdb do
   defp upsert_series(_conn, []), do: :ok
 
   defp upsert_series(conn, rows) do
-    Enum.reduce_while(rows, :ok, fn {id, name, labels, kind, status}, :ok ->
+    rows
+    |> Enum.map(&series_tuple/1)
+    |> Enum.reduce_while(:ok, fn {id, name, labels, kind, status}, :ok ->
       sql =
         "INSERT INTO series (id, name, labels, kind, status) VALUES ($1, $2, $3::jsonb, $4, $5) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, labels = EXCLUDED.labels, kind = EXCLUDED.kind, status = EXCLUDED.status"
 
@@ -188,18 +192,69 @@ defmodule AutoangelTsdb do
 
   defp write_anomaly_rows(_conn, []), do: :ok
 
-  defp write_anomaly_rows(conn, rows) do
-    Enum.reduce_while(rows, :ok, fn row, :ok ->
-      values = anomaly_values(row)
-
-      sql =
-        "INSERT INTO anomalies (id, series_id, start_time, end_time, score, observed, expected_lower, expected_upper, baseline_type, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO UPDATE SET end_time=EXCLUDED.end_time, score=EXCLUDED.score, status=EXCLUDED.status"
-
-      case Postgrex.query(conn, sql, values) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
+  # Each item is either an Anomaly start `%{anomaly: row, candidates: [...]}`,
+  # written with all its Candidates in one transaction (Requirement 21.1, 21.3),
+  # or a later update `%{anomaly: row}` (no :candidates key) that touches only
+  # the anomalies row (Requirement 21.4). Starts are idempotent on retry: the
+  # anomaly is upserted and candidate rows that already exist are left alone.
+  defp write_anomaly_rows(conn, items) do
+    Enum.reduce_while(items, :ok, fn item, :ok ->
+      case write_anomaly_item(conn, item) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
       end
     end)
+  end
+
+  @anomaly_insert "INSERT INTO anomalies (id, series_id, start_time, end_time, score, observed, expected_lower, expected_upper, baseline_type, status, kind, classification, learning) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
+
+  @anomaly_start_sql @anomaly_insert <> " ON CONFLICT (id) DO NOTHING"
+
+  @anomaly_update_sql @anomaly_insert <>
+                        " ON CONFLICT (id) DO UPDATE SET end_time=EXCLUDED.end_time, status=EXCLUDED.status"
+
+  @candidate_sql "INSERT INTO anomaly_candidates (anomaly_id, series_id, rank, evidence, weak) VALUES ($1,$2,$3,$4::jsonb,$5) ON CONFLICT (anomaly_id, rank) DO NOTHING"
+
+  defp write_anomaly_item(conn, %{anomaly: row, candidates: candidates}) when is_list(candidates) do
+    Postgrex.transaction(conn, fn tx ->
+      with :ok <- query(tx, @anomaly_start_sql, anomaly_values(row)),
+           :ok <- write_candidates(tx, row.id, candidates) do
+        :ok
+      else
+        {:error, reason} -> Postgrex.rollback(tx, reason)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, reason} -> classify(reason)
+    end
+  end
+
+  defp write_anomaly_item(conn, %{anomaly: row}) do
+    case query(conn, @anomaly_update_sql, anomaly_values(row)) do
+      :ok -> :ok
+      {:error, reason} -> classify(reason)
+    end
+  end
+
+  defp write_anomaly_item(conn, %{id: _} = row), do: write_anomaly_item(conn, %{anomaly: row})
+
+  defp write_candidates(tx, anomaly_id, candidates) do
+    Enum.reduce_while(candidates, :ok, fn c, :ok ->
+      params = [anomaly_id, c.series_id, c.rank, Jason.encode!(c.evidence), c.weak == true]
+
+      case query(tx, @candidate_sql, params) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp query(conn, sql, params) do
+    case Postgrex.query(conn, sql, params) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   defp write_band_rows(_conn, []), do: :ok
@@ -278,7 +333,20 @@ defmodule AutoangelTsdb do
   defp with_conn(conn, fun) when is_pid(conn), do: fun.(conn)
   defp with_conn(_, _fun), do: {:permanent, :invalid_handle}
 
+  # Integrity (class 23) and data (class 22) errors can never succeed on retry,
+  # so they are permanent and cannot wedge the Writer queue; everything else
+  # (connection loss, timeouts, serialization failures) is retryable.
+  defp classify(%Postgrex.Error{postgres: %{code: code}} = reason) when is_atom(code) do
+    if permanent_sqlstate?(code), do: {:permanent, reason}, else: {:retryable, reason}
+  end
+
   defp classify(reason), do: {:retryable, reason}
+
+  defp permanent_sqlstate?(code),
+    do: code |> Postgrex.ErrorCode.name_to_code() |> String.starts_with?(["22", "23"])
+
+  defp outcome({:error, reason}), do: classify(reason)
+  defp outcome(other), do: other
   defp timestamp(%DateTime{} = value), do: value
   defp timestamp(ms) when is_integer(ms), do: DateTime.from_unix!(ms, :millisecond)
 
@@ -308,13 +376,26 @@ defmodule AutoangelTsdb do
       row.series_id,
       timestamp(row.start_time),
       timestamp_or_nil(row.end_time),
-      row.score,
-      row.observed,
-      row.lower,
-      row.upper,
-      to_string(row.baseline_type),
-      to_string(row.status)
+      float_or_nil(Map.get(row, :score)),
+      float_or_nil(Map.get(row, :observed)),
+      float_or_nil(Map.get(row, :lower)),
+      float_or_nil(Map.get(row, :upper)),
+      string_or_nil(Map.get(row, :baseline_type)),
+      to_string(row.status),
+      to_string(Map.get(row, :kind) || :value),
+      string_or_nil(Map.get(row, :classification)),
+      Map.get(row, :learning, false) == true
     ]
+
+  defp float_or_nil(nil), do: nil
+  defp float_or_nil(value) when is_number(value), do: value * 1.0
+  defp float_or_nil(_), do: nil
+
+  defp string_or_nil(nil), do: nil
+  defp string_or_nil(value), do: to_string(value)
+
+  defp series_tuple({_id, _name, _labels, _kind, _status} = tuple), do: tuple
+  defp series_tuple(%{} = row), do: series_row(row)
 
   defp band_values(row),
     do: {row.series_id, row.ts, row.lower, row.upper, to_string(row.baseline_type)}

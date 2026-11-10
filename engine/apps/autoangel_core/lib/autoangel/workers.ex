@@ -35,6 +35,7 @@ defmodule Autoangel.Workers.Worker do
   require Logger
   alias Autoangel.{Alert.Dispatcher, Detect.Decision, Kernel, Kernel.Params, Kernel.State}
   alias Autoangel.Exposition.Sample
+  alias Autoangel.Storage.{Rows, Writer}
 
   defstruct index: 0,
             series: %{},
@@ -50,7 +51,8 @@ defmodule Autoangel.Workers.Worker do
             state_store: nil,
             decision_cfg: %{},
             dispatcher: Dispatcher,
-            correlator: Autoangel.Correlate
+            correlator: Autoangel.Correlate,
+            storage_writer: nil
 
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
@@ -94,6 +96,10 @@ defmodule Autoangel.Workers.Worker do
 
   def series(pid, key), do: GenServer.call(pid, {:series, key})
 
+  @doc "Returns and clears the latest baseline band recorded per Series."
+  @spec take_bands(GenServer.server()) :: [map()]
+  def take_bands(pid), do: GenServer.call(pid, :take_bands)
+
   @impl GenServer
   def init(opts) do
     interval = Keyword.get(opts, :sweep_interval, 15_000)
@@ -110,7 +116,8 @@ defmodule Autoangel.Workers.Worker do
       state_store: Keyword.get(opts, :state_store),
       decision_cfg: Keyword.get(opts, :decision_cfg, %{}),
       dispatcher: Keyword.get(opts, :dispatcher, Dispatcher),
-      correlator: Keyword.get(opts, :correlator, Autoangel.Correlate)
+      correlator: Keyword.get(opts, :correlator, Autoangel.Correlate),
+      storage_writer: Keyword.get(opts, :storage_writer)
     }
 
     :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
@@ -150,6 +157,19 @@ defmodule Autoangel.Workers.Worker do
 
   def handle_call({:series, key}, _from, state), do: {:reply, Map.get(state.series, key), state}
 
+  def handle_call(:take_bands, _from, state) do
+    {bands, series} =
+      Enum.reduce(state.series, {[], state.series}, fn
+        {key, %{band: band} = entry}, {bands, acc} when not is_nil(band) ->
+          {[band | bands], Map.put(acc, key, %{entry | band: nil})}
+
+        _other, acc ->
+          acc
+      end)
+
+    {:reply, bands, %{state | series: series}}
+  end
+
   @impl GenServer
   def handle_cast({:release, count}, state) when is_integer(count) and count >= 0 do
     decrement(state.queue_counter, count)
@@ -187,8 +207,10 @@ defmodule Autoangel.Workers.Worker do
             failing_targets: failing_targets
           })
 
+        series_state = ensure_stored(series_state, state)
         {meta, events} = Decision.step(series_state.meta, :missing_sweep, now, cfg)
         forward_events(state, events)
+        store_status_changes(state, meta, events)
         Map.put(acc, key, %{series_state | meta: meta})
       end)
 
@@ -239,7 +261,12 @@ defmodule Autoangel.Workers.Worker do
     {series, _} =
       Enum.reduce(state.pending, {state.series, []}, fn {key, samples}, {all, _} ->
         samples = samples |> Enum.sort_by(&timestamp/1) |> Enum.chunk_every(state.max_batch)
-        current = Map.get(all, key, new_series(key, hd(samples) |> hd()))
+
+        current =
+          all
+          |> Map.get_lazy(key, fn -> new_series(key, hd(samples) |> hd(), state) end)
+          |> ensure_stored(state)
+
         updated = Enum.reduce(samples, current, &score_chunk(&2, &1, state))
         {Map.put(all, key, updated), []}
       end)
@@ -278,6 +305,7 @@ defmodule Autoangel.Workers.Worker do
           |> Enum.reduce(series.meta, &apply_result(&1, &2, state))
 
         %{series | kernel_state: kernel_state, meta: meta}
+        |> Map.put(:band, latest_band(series, results, samples))
 
       {:error, reason} ->
         Logger.warning("kernel error for worker series #{inspect(series.key)}: #{inspect(reason)}")
@@ -299,11 +327,50 @@ defmodule Autoangel.Workers.Worker do
   end
 
   defp apply_result({result, sample}, meta, state) do
+    previous_kind = Map.get(meta, :kind)
+
     {meta, events} =
       Decision.step(meta, result, receive_time(sample, state), decision_config(state))
 
     forward_events(state, events)
+
+    events =
+      if meta.kind != previous_kind,
+        do: events ++ [{:status, meta.status}],
+        else: events
+
+    store_status_changes(state, meta, events)
     meta
+  end
+
+  # Status changes update the stored Series row (Requirement 38.2).
+  defp store_status_changes(state, meta, events) do
+    Enum.each(events, fn
+      {:status, status} -> store(state, :series, Rows.series(meta.key, meta.kind, status))
+      _ -> :ok
+    end)
+  end
+
+  # The most recent band from a scored chunk, kept until the next checkpoint
+  # flush; earlier bands of the same interval are superseded (Requirement 53.1).
+  defp latest_band(series, results, samples) do
+    results
+    |> Enum.zip(samples)
+    |> Enum.filter(fn {r, _} -> is_number(Map.get(r, :lower)) and is_number(Map.get(r, :upper)) end)
+    |> List.last()
+    |> case do
+      nil ->
+        Map.get(series, :band)
+
+      {r, sample} ->
+        case Map.get(r, :ts) || timestamp(sample) do
+          ts when is_integer(ts) and ts > 0 ->
+            Rows.band(series.key, ts, r.lower, r.upper, Map.get(r, :baseline_type) || :robust)
+
+          _ ->
+            Map.get(series, :band)
+        end
+    end
   end
 
   defp decision_config(state), do: state.decision_cfg
@@ -385,15 +452,52 @@ defmodule Autoangel.Workers.Worker do
     :exit, _reason -> :ok
   end
 
-  defp new_series(key, sample) do
+  defp new_series(key, sample, state) do
     kind = sample_kind(sample)
+    meta = %Decision.Meta{key: key, kind: kind}
+    # The Series row is enqueued at creation, ahead of every dependent item.
+    store(state, :series, Rows.series(key, kind, meta.status))
 
     %{
       key: key,
       kind: kind,
       kernel_state: State.encode(State.new(kind: kind)),
-      meta: %Decision.Meta{key: key, kind: kind}
+      meta: meta,
+      band: nil,
+      stored?: true
     }
+  end
+
+  # A Series restored from a checkpoint (or held across a Writer restart) may
+  # have no stored row. Enqueue it once, before its first dependent item (band,
+  # anomaly), so foreign keys always resolve. Idempotent upsert on the backend.
+  defp ensure_stored(%{stored?: true} = series, _state), do: series
+  defp ensure_stored(series, %{storage_writer: nil}), do: series
+
+  defp ensure_stored(series, state) do
+    meta = series.meta
+
+    store(
+      state,
+      :series,
+      Rows.series(
+        series.key,
+        Map.get(meta, :kind) || series.kind,
+        Map.get(meta, :status) || :learning
+      )
+    )
+
+    Map.put(series, :stored?, true)
+  end
+
+  # Enqueue a storage item when a Storage_Writer is configured (never blocks).
+  defp store(%{storage_writer: nil}, _kind, _item), do: :ok
+
+  defp store(%{storage_writer: writer}, kind, item) do
+    if process_alive?(writer), do: Writer.enqueue_async(writer, kind, item)
+    :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   defp sample_kind(%Sample{series_kind: kind}, _fallback) when kind in [:gauge, :counter], do: kind

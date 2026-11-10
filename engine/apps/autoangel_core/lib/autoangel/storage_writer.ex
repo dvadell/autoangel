@@ -259,6 +259,7 @@ defmodule Autoangel.Storage.Writer do
 
   defp write_other(backend, handle, :series, items), do: backend.write_series(handle, items)
   defp write_other(backend, handle, :band, items), do: backend.write_bands(handle, items)
+  defp write_other(backend, handle, :anomaly, items), do: backend.write_anomalies(handle, items)
   defp write_other(_backend, _handle, kind, _items), do: {:permanent, {:unknown_kind, kind}}
 
   defp finish_batch(state, result, batch, queue, size, uuid) do
@@ -354,7 +355,15 @@ defmodule Autoangel.Storage.Supervisor do
   @impl true
   def init(opts) do
     writer_name = Keyword.get(opts, :writer_name, Autoangel.Storage.Writer)
-    children = [{Autoangel.Storage.Writer, Keyword.put(opts, :name, writer_name)}]
+
+    # The Writer's own init runs the backend init, which applies migrations and
+    # stops the Writer on failure, so a running Writer has a ready schema.
+    writer_opts =
+      opts
+      |> Keyword.put(:name, writer_name)
+      |> Keyword.put_new(:migration_ready, true)
+
+    children = [{Autoangel.Storage.Writer, writer_opts}]
     Supervisor.init(children, strategy: :one_for_one)
   end
 end

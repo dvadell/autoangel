@@ -1,10 +1,10 @@
 defmodule AutoangelTsdb.Migrations do
   @moduledoc "Idempotent, versioned SQL migrations owned by the Engine."
 
-  @schema_version 1
+  @schema_version 2
 
   @doc "The schema contract version supported by this backend."
-  @spec version() :: 1
+  @spec version() :: 2
   def version, do: @schema_version
 
   @doc "Runs every pending migration. Each version is committed only after success."
@@ -68,6 +68,22 @@ defmodule AutoangelTsdb.Migrations do
            :ok <- query_ok(tx, anomalies_sql(), opts),
            :ok <- query_ok(tx, status_sql(), opts),
            :ok <- query_ok(tx, insert_version_sql(1), opts) do
+        :ok
+      else
+        {:error, reason} -> Postgrex.rollback(tx, reason)
+      end
+    end)
+    |> transaction_result()
+  end
+
+  # Version 2 aligns the anomaly tables with the design contract: anomalies gain
+  # kind, classification and learning; candidates carry jsonb evidence and the
+  # weak-evidence marker, are keyed by (anomaly_id, rank) with ranks >= 1, and
+  # each candidate Series appears once per Anomaly (Requirements 21.1, 38.5, 38.6).
+  defp apply_one(conn, 2, opts) do
+    Postgrex.transaction(conn, fn tx ->
+      with :ok <- query_ok(tx, anomalies_v2_sql(), opts),
+           :ok <- query_ok(tx, insert_version_sql(2), opts) do
         :ok
       else
         {:error, reason} -> Postgrex.rollback(tx, reason)
@@ -146,6 +162,23 @@ defmodule AutoangelTsdb.Migrations do
       PRIMARY KEY (anomaly_id, series_id)
     );
     CREATE INDEX IF NOT EXISTS anomalies_series_start_idx ON anomalies (series_id, start_time DESC)
+    """
+  end
+
+  defp anomalies_v2_sql do
+    """
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'value';
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS classification text;
+    ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS learning boolean NOT NULL DEFAULT false;
+    ALTER TABLE anomaly_candidates DROP CONSTRAINT IF EXISTS anomaly_candidates_pkey;
+    ALTER TABLE anomaly_candidates DROP COLUMN IF EXISTS evidence;
+    ALTER TABLE anomaly_candidates ADD COLUMN evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE anomaly_candidates ALTER COLUMN evidence DROP DEFAULT;
+    ALTER TABLE anomaly_candidates ADD COLUMN IF NOT EXISTS weak boolean NOT NULL DEFAULT false;
+    ALTER TABLE anomaly_candidates ALTER COLUMN weak DROP DEFAULT;
+    ALTER TABLE anomaly_candidates ADD CONSTRAINT anomaly_candidates_rank_check CHECK (rank >= 1);
+    ALTER TABLE anomaly_candidates ADD PRIMARY KEY (anomaly_id, rank);
+    ALTER TABLE anomaly_candidates ADD CONSTRAINT anomaly_candidates_series_unique UNIQUE (anomaly_id, series_id)
     """
   end
 

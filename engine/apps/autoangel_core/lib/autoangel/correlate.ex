@@ -27,9 +27,11 @@ defmodule Autoangel.Correlate do
 
   use GenServer
 
+  require Logger
+
   alias Autoangel.Alert.Dispatcher
   alias Autoangel.SeriesRegistry
-  alias Autoangel.Storage.Writer
+  alias Autoangel.Storage.{Rows, Writer}
 
   @default_window_ms 10 * 60 * 1_000
   @default_pool_limit 20
@@ -452,10 +454,10 @@ defmodule Autoangel.Correlate do
   defp forward_to_storage(writer, anomaly, candidates) do
     if alive?(writer) do
       try do
-        Writer.enqueue_async(writer, :anomaly, %{
-          anomaly: anomaly,
-          candidates: candidates
-        })
+        Writer.enqueue_async(writer, :anomaly, Rows.anomaly_item(anomaly, candidates))
+      rescue
+        # A malformed anomaly must never crash the Correlator and lose its index.
+        exception -> Logger.error("anomaly not stored: #{Exception.message(exception)}")
       catch
         :exit, _reason -> :ok
       end
@@ -464,13 +466,29 @@ defmodule Autoangel.Correlate do
     :ok
   end
 
+  # A resolution updates only the anomalies row (Requirement 21.4).
+  defp store_resolution(nil, _anomaly), do: :ok
+
+  defp store_resolution(writer, anomaly) do
+    if alive?(writer), do: Writer.enqueue_async(writer, :anomaly, Rows.anomaly_update(anomaly))
+    :ok
+  rescue
+    exception ->
+      Logger.error("anomaly update not stored: #{Exception.message(exception)}")
+      :ok
+  catch
+    :exit, _reason -> :ok
+  end
+
   defp alive?(pid) when is_pid(pid), do: Process.alive?(pid)
   defp alive?(name) when is_atom(name), do: is_pid(Process.whereis(name))
   defp alive?(_), do: false
 
   # Relay an anomaly resolution to the Dispatcher, preserving Worker-produced
   # ordering relative to the corresponding start.
-  defp relay_resolved(anomaly, %{dispatcher: dispatcher}) do
+  defp relay_resolved(anomaly, %{dispatcher: dispatcher, storage_writer: writer}) do
+    store_resolution(writer, anomaly)
+
     if alive?(dispatcher) do
       try do
         Dispatcher.event(dispatcher, {:anomaly_resolved, anomaly})

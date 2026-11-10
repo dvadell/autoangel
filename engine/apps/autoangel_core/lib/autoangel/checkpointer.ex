@@ -1,6 +1,7 @@
 defmodule Autoangel.Checkpointer do
   @moduledoc "Periodically persists Worker snapshots without pausing more than one Worker at a time."
 
+  alias Autoangel.Storage.Writer
   alias Autoangel.Workers.Worker
   require Logger
   use GenServer
@@ -30,7 +31,8 @@ defmodule Autoangel.Checkpointer do
        interval_ms: interval,
        workers: workers,
        workers_supervisor: workers_supervisor,
-       state_store: state_store
+       state_store: state_store,
+       storage_writer: Keyword.get(opts, :storage_writer)
      }}
   end
 
@@ -45,6 +47,7 @@ defmodule Autoangel.Checkpointer do
   @impl true
   def handle_info(:checkpoint, state) do
     _ = write_checkpoint(state)
+    flush_bands(state)
     Process.send_after(self(), :checkpoint, state.interval_ms)
     {:noreply, state}
   end
@@ -63,6 +66,25 @@ defmodule Autoangel.Checkpointer do
     :exit, reason ->
       Logger.error("checkpoint write failure: #{inspect(reason)}")
       {:error, reason}
+  end
+
+  # Once per checkpoint interval, enqueue the latest baseline band of every
+  # Series to the Storage_Writer (Requirement 53.1). A no-op without storage.
+  defp flush_bands(%{storage_writer: nil}), do: :ok
+
+  defp flush_bands(%{storage_writer: writer} = state) do
+    with true <- is_pid(GenServer.whereis(writer)),
+         {:ok, workers} <- current_workers(state) do
+      Enum.each(workers, fn worker ->
+        worker |> Worker.take_bands() |> Enum.each(&Writer.enqueue_async(writer, :band, &1))
+      end)
+    end
+
+    :ok
+  catch
+    :exit, reason ->
+      Logger.error("baseline band flush failure: #{inspect(reason)}")
+      :ok
   end
 
   defp current_workers(%{workers_supervisor: nil, workers: workers}), do: {:ok, workers}
