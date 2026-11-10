@@ -1,5 +1,8 @@
 defmodule Autoangel.HTTP.Control do
-  @moduledoc "Authenticated health, readiness and Prometheus metrics endpoints."
+  @moduledoc """
+  Authenticated Control_API: health, readiness, Prometheus metrics and the
+  Feedback_Action endpoint `POST /api/v1/feedback` (Requirement 30).
+  """
 
   import Plug.Conn
   alias Autoangel.Alert.PluginRunner
@@ -34,7 +37,71 @@ defmodule Autoangel.HTTP.Control do
     |> send_resp(200, IO.iodata_to_binary(Exposition.print(metrics)))
   end
 
+  defp route(%Plug.Conn{method: "POST", request_path: "/api/v1/feedback"} = conn, opts) do
+    if Boot.ready?(),
+      do: feedback(conn, opts),
+      else: json(conn, 503, %{"error" => "engine starting"})
+  end
+
   defp route(conn, _opts), do: send_resp(conn, 404, "not found")
+
+  @max_feedback_body 64 * 1024
+
+  # Body: {"action": "mute" | "this was normal", "target": {"series": {...}} |
+  # {"incident_id": "..."}}. Responses: 200 applied, 400 naming the invalid
+  # field, 500 when the State_Store write fails, 503 while the Engine starts.
+  defp feedback(conn, opts) do
+    with {:ok, body, conn} <- read_feedback_body(conn),
+         {:ok, %{} = request} <- decode(body) do
+      apply_feedback(conn, opts, request)
+    else
+      {:too_large, conn} -> json(conn, 413, %{"error" => "body too large"})
+      {:error, conn} -> json(conn, 400, invalid("body"))
+      _ -> json(conn, 400, invalid("body"))
+    end
+  end
+
+  defp apply_feedback(conn, opts, request) do
+    server = Keyword.get(opts, :feedback, Autoangel.Feedback)
+    action = Map.get(request, "action")
+    target = Map.get(request, "target")
+
+    case call_feedback(server, action, target) do
+      {:ok, _change} -> json(conn, 200, %{"applied" => action, "target" => target})
+      {:error, :invalid, field} -> json(conn, 400, invalid(Atom.to_string(field)))
+      {:error, :store_failed} -> json(conn, 500, %{"error" => "store_failed"})
+      :unavailable -> json(conn, 503, %{"error" => "engine starting"})
+    end
+  end
+
+  defp call_feedback(server, action, target) do
+    Autoangel.Feedback.apply(server, action, target)
+  catch
+    :exit, _reason -> :unavailable
+  end
+
+  defp read_feedback_body(conn) do
+    case Plug.Conn.read_body(conn, length: @max_feedback_body) do
+      {:ok, body, conn} -> {:ok, body, conn}
+      {:more, _partial, conn} -> {:too_large, conn}
+      {:error, _reason} -> {:error, conn}
+    end
+  end
+
+  defp decode(body) do
+    case JSON.decode(body) do
+      {:ok, value} -> {:ok, value}
+      {:error, _} -> :error
+    end
+  end
+
+  defp invalid(field), do: %{"error" => "invalid_field", "field" => field}
+
+  defp json(conn, status, body) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(status, JSON.encode!(body))
+  end
 
   defp metrics_families(opts) do
     Metrics.ensure_started()
