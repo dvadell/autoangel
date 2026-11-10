@@ -1,7 +1,7 @@
 defmodule Autoangel.Alert.Policy do
   @moduledoc "Pure Incident and alert policy."
 
-  alias Autoangel.Alert
+  alias Autoangel.Alert.Render
 
   @default_cooldown_ms 30 * 60 * 1_000
 
@@ -12,7 +12,8 @@ defmodule Autoangel.Alert.Policy do
           cooldowns: map(),
           next_id: pos_integer(),
           cooldown_ms: pos_integer(),
-          plugins: list()
+          plugins: list(),
+          render: keyword()
         }
 
   @doc "Returns an empty policy state, optionally with persisted incidents."
@@ -55,7 +56,8 @@ defmodule Autoangel.Alert.Policy do
       cooldowns: cooldowns,
       next_id: next_id,
       cooldown_ms: Keyword.get(opts, :cooldown_ms, @default_cooldown_ms),
-      plugins: Keyword.get(opts, :plugins, [])
+      plugins: Keyword.get(opts, :plugins, []),
+      render: Keyword.get(opts, :render, [])
     }
   end
 
@@ -118,7 +120,7 @@ defmodule Autoangel.Alert.Policy do
           open?: true
         }
 
-        alert = build_alert(anomaly, candidates)
+        alert = build_alert(anomaly, candidates, state)
 
         next = %{
           state
@@ -164,35 +166,8 @@ defmodule Autoangel.Alert.Policy do
 
   defp resolve(state, _anomaly, _now), do: {state, []}
 
-  defp build_alert(anomaly, candidates) do
-    labels =
-      case Map.get(anomaly, :labels) do
-        labels when is_map(labels) -> labels
-        _ -> labels_from_key(Map.get(anomaly, :series_key))
-      end
-
-    name = Map.get(anomaly, :name) || metric_name(Map.get(anomaly, :series_key))
-    range = %{lower: Map.get(anomaly, :lower), upper: Map.get(anomaly, :upper)}
-
-    %Alert{
-      name: name,
-      labels: labels,
-      observed: Map.get(anomaly, :observed),
-      range: range,
-      score: Map.get(anomaly, :score),
-      start_time: Map.get(anomaly, :start_ms),
-      anomaly_id: Map.get(anomaly, :id),
-      anomaly: anomaly,
-      candidates: candidates
-    }
-  end
-
-  defp metric_name({name, _labels}) when is_binary(name), do: name
-  defp metric_name(name) when is_binary(name), do: name
-  defp metric_name(_), do: nil
-
-  defp labels_from_key({_name, labels}) when is_list(labels), do: Map.new(labels)
-  defp labels_from_key(_), do: %{}
+  defp build_alert(anomaly, candidates, state),
+    do: Render.build(anomaly, candidates, Map.get(state, :render, []))
 
   defp restore_cooldown({_id, incident}, acc, cooldown_ms, now_ms) do
     closed = Map.get(incident, :closed_at)

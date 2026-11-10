@@ -14,6 +14,7 @@ defmodule Autoangel.Config do
     persistence: %{n: 3, m: 5},
     correlation: %{candidate_pool_limit: 20, support_threshold: 2, window: 600},
     retention: %{raw: 14 * 86_400, aggregate: 13 * 30 * 86_400, anomaly: 90 * 86_400},
+    alerts: %{max_candidates: 5, console_base_url: nil},
     heartbeat_interval: 15,
     ingest_rate_limit: %{rate: 50, burst: 200},
     storage: %{backend: :none, password: nil},
@@ -281,6 +282,18 @@ defmodule Autoangel.Config do
 
   defp normalize_auth_exemptions(config), do: config
 
+  defp valid_base_url?(nil), do: true
+
+  defp valid_base_url?(url) when is_binary(url) do
+    match?(
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and is_binary(host) and host != "",
+      URI.parse(String.trim(url))
+    )
+  end
+
+  defp valid_base_url?(_), do: false
+
   defp validate(config, plugin_result) when is_map(config) do
     cardinality = section(config, :cardinality)
     learning = section(config, :learning)
@@ -288,6 +301,7 @@ defmodule Autoangel.Config do
     persistence = section(config, :persistence)
     correlation = section(config, :correlation)
     retention = section(config, :retention)
+    alerts = section(config, :alerts)
     rate = section(config, :ingest_rate_limit)
     storage = section(config, :storage)
     tls = section(config, :tls)
@@ -305,6 +319,8 @@ defmodule Autoangel.Config do
       {:persistence_m, persistence[:m], &positive_number?/1},
       {:candidate_pool_limit, correlation[:candidate_pool_limit], &positive_integer?/1},
       {:support_threshold, correlation[:support_threshold], &(is_integer(&1) and &1 >= 0)},
+      {:alert_max_candidates, alerts[:max_candidates], &positive_integer?/1},
+      {:console_base_url, alerts[:console_base_url], &valid_base_url?/1},
       {:retention_raw, retention[:raw], &positive_integer?/1},
       {:retention_aggregate, retention[:aggregate], &positive_integer?/1},
       {:retention_anomaly, retention[:anomaly], &positive_integer?/1},

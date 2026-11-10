@@ -42,7 +42,7 @@ defmodule Autoangel.Alert.Supervisor do
          [
            state_store: Keyword.get(opts, :state_store, Autoangel.StateStore),
            plugins: plugins
-         ]}
+         ] ++ Keyword.take(opts, [:console_base_url, :max_candidates])}
       ],
       strategy: :one_for_one
     )

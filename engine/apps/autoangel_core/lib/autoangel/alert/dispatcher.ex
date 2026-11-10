@@ -15,6 +15,8 @@ defmodule Autoangel.Alert.Dispatcher do
           | {:cooldown_ms, pos_integer()}
           | {:now, (-> integer())}
           | {:policy_state, map()}
+          | {:console_base_url, String.t() | nil}
+          | {:max_candidates, pos_integer()}
 
   defstruct policy: nil,
             runners: %{},
@@ -58,6 +60,7 @@ defmodule Autoangel.Alert.Dispatcher do
       )
       |> Map.put(:cooldown_ms, cooldown)
       |> Map.put(:plugins, Map.keys(runners))
+      |> Map.put(:render, render_opts(opts))
 
     {:ok,
      %__MODULE__{
@@ -82,6 +85,14 @@ defmodule Autoangel.Alert.Dispatcher do
     {policy, actions} = Policy.on_event(state.policy, event, state.now.())
     dispatch(actions, state)
     {:noreply, %{state | policy: policy}}
+  end
+
+  # Alert content options (Requirements 26.2, 26.3, 26.5): the Console link is
+  # added only when a base URL is configured; the number of Candidates per alert
+  # is configurable.
+  defp render_opts(opts) do
+    [console_base_url: Keyword.get(opts, :console_base_url)]
+    |> Keyword.merge(Keyword.take(opts, [:max_candidates]))
   end
 
   defp restored_incidents(nil, _now), do: %{}

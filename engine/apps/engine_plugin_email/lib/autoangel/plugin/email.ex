@@ -2,6 +2,8 @@ defmodule Autoangel.Plugin.Email do
   @moduledoc "SMTP alert plugin."
   @behaviour Autoangel.Plugin
 
+  alias Autoangel.Alert.Render
+
   @default_port 587
   @default_timeout 10_000
 
@@ -269,74 +271,11 @@ defmodule Autoangel.Plugin.Email do
   end
 
   defp format_alert(alert) do
-    range = get(alert, :range, %{})
-    lower = get(range, :lower, get(alert, :lower, "unknown"))
-    upper = get(range, :upper, get(alert, :upper, "unknown"))
-
-    start_time =
-      format_time(
-        get(alert, :start_ms, get(alert, :start_time, get(alert, :started_at, "unknown")))
-      )
-
-    candidates = format_candidates(get(alert, :candidates, []))
-
-    [
-      {"metric", get(alert, :metric_name, get(alert, :name, "unknown"))},
-      {"labels", format_labels(get(alert, :labels, %{}))},
-      {"observed", get(alert, :observed, get(alert, :observed_value, "unknown"))},
-      {"range_lower", lower},
-      {"range_upper", upper},
-      {"score", get(alert, :score, "unknown")},
-      {"start_time", start_time},
-      {"candidates", candidates}
-    ]
-    |> Enum.map_join("\r\n", fn {name, value} -> "#{name}: #{value}" end)
-    |> then(&(&1 <> "\r\n"))
+    alert
+    |> Render.text()
+    |> String.replace("\n", "\r\n")
+    |> Kernel.<>("\r\n")
   end
-
-  defp format_labels(labels) when is_map(labels),
-    do: Enum.map_join(labels, ", ", fn {key, value} -> "#{key}=#{value}" end)
-
-  defp format_labels(labels), do: to_string(labels)
-
-  defp format_candidates([]), do: "none found inside the Correlation_Window"
-
-  defp format_candidates(candidates) when is_list(candidates) do
-    Enum.map_join(candidates, "; ", fn candidate ->
-      name = get(candidate, :metric_name, get(candidate, :name, "unknown"))
-      labels = format_labels(get(candidate, :labels, %{}))
-      rank = get(candidate, :rank, "unknown")
-
-      evidence =
-        if get(candidate, :weak_evidence?, get(candidate, :weak_evidence, false)),
-          do: " (weak evidence)",
-          else: ""
-
-      "rank #{rank}: #{name}{#{labels}}#{evidence}"
-    end)
-  end
-
-  defp format_candidates(candidates), do: to_string(candidates)
-
-  defp format_time(value) when is_integer(value) do
-    case DateTime.from_unix(value, :millisecond) do
-      {:ok, datetime} -> DateTime.to_iso8601(datetime)
-      _ -> to_string(value)
-    end
-  end
-
-  defp format_time(value), do: to_string(value)
-
-  defp get(nil, _key, default), do: default
-
-  defp get(map, key, default) when is_map(map) do
-    case Map.get(map, key) do
-      nil -> Map.get(map, Atom.to_string(key), default)
-      value -> value
-    end
-  end
-
-  defp get(_value, _key, default), do: default
 
   defp safe_header?(value), do: not String.contains?(value, ["\r", "\n", "<", ">"])
 

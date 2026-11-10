@@ -9,6 +9,8 @@ defmodule EnginePluginTelegram do
 
   @behaviour Autoangel.Plugin
 
+  alias Autoangel.Alert.Render
+
   @default_api_base "https://api.telegram.org"
   @default_timeout 10_000
 
@@ -96,82 +98,7 @@ defmodule EnginePluginTelegram do
   defp classify_response({:error, reason}), do: {:retryable, {:http_error, reason}}
   defp classify_response(_), do: {:retryable, :invalid_http_response}
 
-  defp render_alert(%{message: message}) when is_binary(message), do: truncate(message)
-  defp render_alert(alert) when is_map(alert), do: format_alert(alert)
-
-  defp format_alert(alert) do
-    range = field(alert, :range) || %{}
-    candidates = field(alert, :candidates) || []
-
-    fields = [
-      {"metric", field(alert, :name) || field(alert, :metric_name)},
-      {"labels", format_labels(field(alert, :labels) || %{})},
-      {"observed value", field(alert, :observed)},
-      {"expected range lower", field(range, :lower)},
-      {"expected range upper", field(range, :upper)},
-      {"anomaly score", field(alert, :score)},
-      {"start", format_time(field(alert, :start_time))}
-    ]
-
-    base =
-      fields
-      |> Enum.reject(fn {_name, value} -> is_nil(value) end)
-      |> Enum.map_join("\n", fn {name, value} -> "#{name}: #{value}" end)
-
-    candidate_text = format_candidates(candidates)
-    note = if candidates == [], do: "\nno candidates found inside the Correlation_Window", else: ""
-
-    truncate(
-      base <> note <> if(candidate_text == "", do: "", else: "\ncandidates:\n" <> candidate_text)
-    )
-  end
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-  defp field(_map, _key), do: nil
-
-  defp format_labels(labels) when is_map(labels),
-    do: Enum.map_join(labels, ", ", fn {key, value} -> "#{key}=#{value}" end)
-
-  defp format_labels(_), do: ""
-
-  defp format_candidates(candidates) do
-    candidates
-    |> Enum.filter(&is_map/1)
-    |> Enum.map_join("\n", fn candidate ->
-      {name, labels} = candidate_identity(candidate)
-      rank = field(candidate, :rank) || "?"
-
-      weak =
-        if field(candidate, :weak?) || field(candidate, :weak_evidence),
-          do: " (weak evidence)",
-          else: ""
-
-      "#{rank}. #{name}#{format_candidate_labels(labels)}#{weak}"
-    end)
-  end
-
-  defp candidate_identity(candidate) do
-    series_key = field(candidate, :series_key)
-    name = field(candidate, :name) || field(candidate, :metric_name) || key_name(series_key) || "?"
-    labels = field(candidate, :labels) || key_labels(series_key) || %{}
-    {name, labels}
-  end
-
-  defp key_name({name, _labels}) when is_binary(name), do: name
-  defp key_name(_), do: nil
-  defp key_labels({_name, labels}) when is_map(labels), do: labels
-  defp key_labels({_name, labels}) when is_list(labels), do: Map.new(labels)
-  defp key_labels(_), do: nil
-
-  defp format_candidate_labels(labels),
-    do: if(labels == %{}, do: "", else: " [#{format_labels(labels)}]")
-
-  defp format_time(%DateTime{} = time), do: DateTime.to_iso8601(time)
-
-  defp format_time(milliseconds) when is_integer(milliseconds),
-    do: DateTime.from_unix!(milliseconds, :millisecond) |> DateTime.to_iso8601()
-
-  defp format_time(time), do: to_string(time)
+  defp render_alert(alert) when is_map(alert), do: truncate(Render.text(alert))
 
   defp truncate(text), do: String.slice(text, 0, 4096)
 

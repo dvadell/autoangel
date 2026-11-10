@@ -81,6 +81,14 @@ defmodule Autoangel.ConfigTest do
 
   test "rejects invalid candidate pool settings" do
     assert_invalid_setting("[correlation]\ncandidate_pool_limit = 0\n", "candidate_pool_limit")
+    assert_invalid_setting("[alerts]\nmax_candidates = 0\n", "alert_max_candidates")
+
+    assert_invalid_setting(
+      "[alerts]\nconsole_base_url = \"javascript:alert(1)\"\n",
+      "console_base_url"
+    )
+
+    assert_invalid_setting("[alerts]\nconsole_base_url = \"\"\n", "console_base_url")
     assert_invalid_setting("[correlation]\nsupport_threshold = -1\n", "support_threshold")
   end
 
