@@ -13,16 +13,38 @@ defmodule AutoangelTsdb do
 
   @impl true
   def init(config) when is_map(config) do
-    with {:ok, conn} <- connection(config),
-         :ok <- Migrations.run(conn, Map.get(config, :migration_options, [])),
-         {:ok, _policy_results} <- AutoangelTsdb.Retention.apply_policies(conn, config) do
-      {:ok, %{conn: conn, ready: true}}
-    else
-      {:error, reason} -> {:error, reason}
+    with {:ok, conn} <- connection(config) do
+      conn |> prepare(config) |> ready(conn, config)
     end
   end
 
   def init(config) when is_list(config), do: init(Map.new(config))
+
+  defp ready(:ok, conn, _config), do: {:ok, %{conn: conn, ready: true}}
+
+  # A connection this call started is closed on failure so that callers
+  # retrying init (the Migrator, the Heartbeat) never leak connections.
+  defp ready({:error, reason}, conn, config) do
+    if owned_connection?(config), do: stop_connection(conn)
+    {:error, reason}
+  end
+
+  defp prepare(conn, config) do
+    with :ok <- Migrations.run(conn, Map.get(config, :migration_options, [])),
+         {:ok, _policy_results} <- AutoangelTsdb.Retention.apply_policies(conn, config) do
+      :ok
+    end
+  end
+
+  defp owned_connection?(config),
+    do: not (is_pid(Map.get(config, :conn)) or is_pid(Map.get(config, "conn")))
+
+  defp stop_connection(conn) do
+    Process.unlink(conn)
+    GenServer.stop(conn, :normal, 5_000)
+  catch
+    :exit, _ -> :ok
+  end
 
   @impl true
   def append_samples(%{conn: conn, ready: true}, samples) when is_list(samples) do
