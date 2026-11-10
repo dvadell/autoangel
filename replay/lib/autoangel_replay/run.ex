@@ -97,6 +97,7 @@ defmodule AutoangelReplay.Run do
   end
 
   defp stop_engine(previous_state_path) do
+    Process.delete(:autoangel_replay_workers)
     _ = Application.stop(:autoangel_core)
     Application.delete_env(:autoangel_core, :config)
     Application.delete_env(:autoangel_core, :now)
@@ -170,24 +171,32 @@ defmodule AutoangelReplay.Run do
     :ok
   end
 
+  # Worker pids are resolved once per replay (the pool is fixed while it runs).
   defp workers do
-    for {_id, pid, _, _} <- Supervisor.which_children(Autoangel.Workers), is_pid(pid), do: pid
+    case Process.get(:autoangel_replay_workers) do
+      nil ->
+        pids =
+          for {_id, pid, _, _} <- Supervisor.which_children(Autoangel.Workers), is_pid(pid), do: pid
+
+        Process.put(:autoangel_replay_workers, pids)
+        pids
+
+      pids ->
+        pids
+    end
   end
 
-  # Deliveries run asynchronously in plugin runners; wait until the count is
-  # stable.
+  # Deliveries run asynchronously (a dispatch task, then the plugin runner).
+  # Every Incident the Dispatcher opened for an unmuted Series yields exactly
+  # one delivery per enabled plugin, so wait for that exact count.
   defp await_alerts do
     settle()
-    wait_stable(Capture.count(), 0)
+
+    expected =
+      Dispatcher.state().incidents |> Map.values() |> Enum.count(&(not Map.get(&1, :muted?, false)))
+
+    wait_until(fn -> Capture.count() >= expected end, 30_000)
     Capture.alerts()
-  end
-
-  defp wait_stable(count, stable) when stable >= 5, do: count
-
-  defp wait_stable(count, stable) do
-    Process.sleep(20)
-    now = Capture.count()
-    if now == count, do: wait_stable(now, stable + 1), else: wait_stable(now, 0)
   end
 
   # --- report -------------------------------------------------------------------
@@ -249,7 +258,7 @@ defmodule AutoangelReplay.Run do
         :ok
 
       timeout <= 0 ->
-        raise "Engine did not become ready"
+        raise "replay timed out waiting for the Engine"
 
       true ->
         Process.sleep(20)
