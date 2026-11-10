@@ -57,6 +57,10 @@ defmodule Autoangel.SeriesRegistry do
     GenServer.call(__MODULE__, {:resolve, key_from(key_or_sample), type_hint})
   end
 
+  @doc "Returns the reference of a Series the Engine holds, without creating one."
+  @spec lookup(series_key()) :: {:ok, series_ref()} | :error
+  def lookup(key), do: GenServer.call(__MODULE__, {:lookup, key})
+
   @spec count() :: non_neg_integer()
   def count, do: GenServer.call(__MODULE__, :count)
 
@@ -109,6 +113,13 @@ defmodule Autoangel.SeriesRegistry do
 
       [] ->
         admit(key, type_hint, state)
+    end
+  end
+
+  def handle_call({:lookup, key}, _from, state) do
+    case :ets.lookup(state.keys, key) do
+      [{^key, reference}] -> {:reply, {:ok, reference}, state}
+      [] -> {:reply, :error, state}
     end
   end
 

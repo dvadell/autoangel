@@ -59,6 +59,8 @@ defmodule Autoangel.Application do
            state_store: Autoangel.StateStore,
            console_base_url: get_in(config, [:alerts, :console_base_url]),
            max_candidates: get_in(config, [:alerts, :max_candidates]) || 5},
+          {Autoangel.Feedback,
+           state_store: Autoangel.StateStore, base_sensitivity: get_in(config, [:sensitivity])},
           storage_child(storage, config),
           scrape_child(config),
           {Autoangel.SelfMonitor,

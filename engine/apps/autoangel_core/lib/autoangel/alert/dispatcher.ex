@@ -36,6 +36,10 @@ defmodule Autoangel.Alert.Dispatcher do
   def handle_event(server \\ __MODULE__, event, now_ms),
     do: GenServer.call(server, {:event, event, now_ms})
 
+  @doc "Marks a Series (`{:series, key}`) or Incident (`{:incident, id}`) as muted."
+  @spec put_mute(GenServer.server(), {:series, term()} | {:incident, term()}) :: :ok
+  def put_mute(server \\ __MODULE__, target), do: GenServer.call(server, {:put_mute, target})
+
   @spec state(GenServer.server()) :: map()
   def state(server \\ __MODULE__), do: GenServer.call(server, :state)
 
@@ -61,6 +65,7 @@ defmodule Autoangel.Alert.Dispatcher do
       |> Map.put(:cooldown_ms, cooldown)
       |> Map.put(:plugins, Map.keys(runners))
       |> Map.put(:render, render_opts(opts))
+      |> Map.put(:mutes, restored_mutes(Keyword.get(opts, :state_store)))
 
     {:ok,
      %__MODULE__{
@@ -73,6 +78,9 @@ defmodule Autoangel.Alert.Dispatcher do
 
   @impl true
   def handle_call(:state, _from, state), do: {:reply, state.policy, state}
+
+  def handle_call({:put_mute, target}, _from, state),
+    do: {:reply, :ok, %{state | policy: Policy.mute(state.policy, target)}}
 
   def handle_call({:event, event, now_ms}, _from, state) do
     {policy, actions} = Policy.on_event(state.policy, event, now_ms)
@@ -93,6 +101,22 @@ defmodule Autoangel.Alert.Dispatcher do
   defp render_opts(opts) do
     [console_base_url: Keyword.get(opts, :console_base_url)]
     |> Keyword.merge(Keyword.take(opts, [:max_candidates]))
+  end
+
+  defp restored_mutes(nil), do: MapSet.new()
+
+  defp restored_mutes(store) do
+    case Autoangel.StateStore.records(store, :mute) do
+      records when is_list(records) -> records |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+      {:error, reason} -> mute_restore_failed(reason)
+    end
+  catch
+    :exit, reason -> mute_restore_failed(reason)
+  end
+
+  defp mute_restore_failed(reason) do
+    Logger.error("alert mute restore failed: #{inspect(reason)}")
+    MapSet.new()
   end
 
   defp restored_incidents(nil, _now), do: %{}

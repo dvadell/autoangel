@@ -96,6 +96,14 @@ defmodule Autoangel.Workers.Worker do
 
   def series(pid, key), do: GenServer.call(pid, {:series, key})
 
+  @doc """
+  Sets the per-Series sensitivity override used by `Decision` (Requirement 30.2).
+  Returns `:error` when this Worker does not hold the Series.
+  """
+  @spec set_sensitivity(GenServer.server(), term(), number()) :: :ok | :error
+  def set_sensitivity(pid, key, value) when is_number(value),
+    do: GenServer.call(pid, {:set_sensitivity, key, value})
+
   @doc "Returns and clears the latest baseline band recorded per Series."
   @spec take_bands(GenServer.server()) :: [map()]
   def take_bands(pid), do: GenServer.call(pid, :take_bands)
@@ -156,6 +164,17 @@ defmodule Autoangel.Workers.Worker do
   end
 
   def handle_call({:series, key}, _from, state), do: {:reply, Map.get(state.series, key), state}
+
+  def handle_call({:set_sensitivity, key, value}, _from, state) do
+    case Map.fetch(state.series, key) do
+      {:ok, entry} ->
+        meta = Map.put(entry.meta, :sensitivity_override, value)
+        {:reply, :ok, %{state | series: Map.put(state.series, key, %{entry | meta: meta})}}
+
+      :error ->
+        {:reply, :error, state}
+    end
+  end
 
   def handle_call(:take_bands, _from, state) do
     {bands, series} =
@@ -230,8 +249,41 @@ defmodule Autoangel.Workers.Worker do
 
       {:ok, entries} ->
         restored = Enum.reduce(entries, state.series, &restore_entry/2)
-        %{state | series: restored}
+        restore_sensitivities(%{state | series: restored})
     end
+  end
+
+  # Per-Series overrides are persisted synchronously by Feedback, possibly after
+  # the last checkpoint; the State_Store record is authoritative on restore.
+  defp restore_sensitivities(%{state_store: store} = state) do
+    case Autoangel.StateStore.records(store, :sensitivity) do
+      [] ->
+        state
+
+      records when is_list(records) ->
+        overrides = Map.new(records)
+        %{state | series: Map.new(state.series, &with_override(&1, overrides))}
+
+      {:error, reason} ->
+        Logger.error("sensitivity override restore failed: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp with_override({key, entry}, overrides) do
+    case Map.fetch(overrides, series_id(key)) do
+      {:ok, value} when is_number(value) ->
+        {key, %{entry | meta: Map.put(entry.meta, :sensitivity_override, value)}}
+
+      _ ->
+        {key, entry}
+    end
+  end
+
+  defp series_id(key) do
+    Autoangel.SeriesRegistry.series_id(key)
+  rescue
+    FunctionClauseError -> nil
   end
 
   defp restore_entry({key, {1, state_bin, meta_bin}}, series)
@@ -454,7 +506,13 @@ defmodule Autoangel.Workers.Worker do
 
   defp new_series(key, sample, state) do
     kind = sample_kind(sample)
-    meta = %Decision.Meta{key: key, kind: kind}
+
+    meta = %Decision.Meta{
+      key: key,
+      kind: kind,
+      sensitivity_override: persisted_override(state, key)
+    }
+
     # The Series row is enqueued at creation, ahead of every dependent item.
     store(state, :series, Rows.series(key, kind, meta.status))
 
@@ -488,6 +546,18 @@ defmodule Autoangel.Workers.Worker do
     )
 
     Map.put(series, :stored?, true)
+  end
+
+  # A "this was normal" override persisted before this Worker created the Series.
+  defp persisted_override(%{state_store: nil}, _key), do: nil
+
+  defp persisted_override(%{state_store: store}, key) do
+    case series_id(key) && Autoangel.StateStore.get_record(store, {:sensitivity, series_id(key)}) do
+      {:ok, value} when is_number(value) -> value
+      _ -> nil
+    end
+  catch
+    :exit, _ -> nil
   end
 
   # Enqueue a storage item when a Storage_Writer is configured (never blocks).

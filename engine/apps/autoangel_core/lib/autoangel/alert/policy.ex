@@ -13,7 +13,8 @@ defmodule Autoangel.Alert.Policy do
           next_id: pos_integer(),
           cooldown_ms: pos_integer(),
           plugins: list(),
-          render: keyword()
+          render: keyword(),
+          mutes: MapSet.t()
         }
 
   @doc "Returns an empty policy state, optionally with persisted incidents."
@@ -57,9 +58,21 @@ defmodule Autoangel.Alert.Policy do
       next_id: next_id,
       cooldown_ms: Keyword.get(opts, :cooldown_ms, @default_cooldown_ms),
       plugins: Keyword.get(opts, :plugins, []),
-      render: Keyword.get(opts, :render, [])
+      render: Keyword.get(opts, :render, []),
+      mutes: MapSet.new(Keyword.get(opts, :mutes, []))
     }
   end
+
+  @doc "Records a mute for `{:series, key}` or `{:incident, id}`; idempotent."
+  @spec mute(state(), {:series, term()} | {:incident, term()}) :: state()
+  def mute(state, {kind, _} = target) when kind in [:series, :incident] do
+    state = normalize_state(state)
+    %{state | mutes: MapSet.put(state.mutes, target)}
+  end
+
+  @doc "True when the target is muted."
+  @spec muted?(state(), {:series, term()} | {:incident, term()}) :: boolean()
+  def muted?(state, target), do: MapSet.member?(Map.get(state, :mutes, MapSet.new()), target)
 
   @spec on_event(state(), tuple(), integer()) :: {state(), [tuple()]}
   def on_event(state, event, now_ms) when is_map(state) and is_integer(now_ms) do
