@@ -49,7 +49,8 @@ defmodule Autoangel.Workers.Worker do
             now: nil,
             state_store: nil,
             decision_cfg: %{},
-            dispatcher: Dispatcher
+            dispatcher: Dispatcher,
+            correlator: Autoangel.Correlate
 
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
@@ -108,7 +109,8 @@ defmodule Autoangel.Workers.Worker do
       now: Keyword.get(opts, :now, fn -> System.system_time(:millisecond) end),
       state_store: Keyword.get(opts, :state_store),
       decision_cfg: Keyword.get(opts, :decision_cfg, %{}),
-      dispatcher: Keyword.get(opts, :dispatcher, Dispatcher)
+      dispatcher: Keyword.get(opts, :dispatcher, Dispatcher),
+      correlator: Keyword.get(opts, :correlator, Autoangel.Correlate)
     }
 
     :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
@@ -306,40 +308,76 @@ defmodule Autoangel.Workers.Worker do
 
   defp decision_config(state), do: state.decision_cfg
 
-  # Forwards detection lifecycle events to the alert Dispatcher so an anomaly can
-  # reach alert delivery. Only `:anomaly_started`/`:anomaly_resolved` are
-  # alert-relevant; status/other events are ignored. Forwarding is a pure
-  # side-effect: it never touches `meta` or `kernel_state`, so detection state is
-  # identical whether or not a Dispatcher is wired. When no Dispatcher process is
-  # running (e.g. unit/property tests, or Topology without the alert tree), this
-  # is a no-op, and a transient `:exit` during the cast is swallowed.
-  defp forward_events(%{dispatcher: nil}, _events), do: :ok
+  # Forwards detection lifecycle events toward alert delivery. An
+  # `:anomaly_started` event is routed to the Correlator, which enriches it with
+  # correlation Candidates, gates on the learning flag and forwards to the
+  # Dispatcher; `:anomaly_resolved` is relayed through the Correlator too, to keep start/resolve order. Other events
+  # are ignored. Forwarding is a pure side-effect: it never touches `meta` or
+  # `kernel_state`, so detection state is identical whether or not the Correlator
+  # or Dispatcher is wired. When a target process is not running (e.g. unit tests
+  # or a Topology without the alert tree) this is a no-op, and a transient
+  # `:exit` during the cast is swallowed.
+  defp forward_events(state, events) do
+    Enum.each(events, fn
+      {:anomaly_started, anomaly} -> forward_started(state, anomaly)
+      {:anomaly_resolved, anomaly} -> forward_resolved(state, anomaly)
+      _ -> :ok
+    end)
 
-  defp forward_events(%{dispatcher: dispatcher}, events) do
-    case alert_events(events) do
-      [] ->
-        :ok
+    :ok
+  end
 
-      relevant ->
-        if dispatcher_alive?(dispatcher) do
-          Enum.each(relevant, &send_event(dispatcher, &1))
-        end
-
-        :ok
+  # An :anomaly_started is enriched with correlation Candidates by the
+  # Correlator, which also gates on the learning flag before forwarding to the
+  # Dispatcher. When no Correlator runs, fall back to forwarding the bare
+  # anomaly directly so an alert can still reach delivery.
+  defp forward_started(%{correlator: correlator} = state, anomaly)
+       when not is_nil(correlator) do
+    if process_alive?(correlator) do
+      try do
+        Autoangel.Correlate.anomaly_started(correlator, anomaly)
+      catch
+        :exit, _reason -> :ok
+      end
+    else
+      dispatch_direct(state, {:anomaly_started, anomaly})
     end
   end
 
-  defp alert_events(events) do
-    Enum.filter(events, fn
-      {:anomaly_started, _anomaly} -> true
-      {:anomaly_resolved, _anomaly} -> true
-      _ -> false
-    end)
+  defp forward_started(state, anomaly),
+    do: dispatch_direct(state, {:anomaly_started, anomaly})
+
+  # An :anomaly_resolved is routed through the Correlator as well (when it runs)
+  # so that, for a given Series, a start and its later resolution reach the
+  # Dispatcher in the order the Worker produced them. Routing resolutions
+  # directly while starts go via the Correlator would let a resolution overtake
+  # its start and strand an Incident open. Falls back to the direct path.
+  defp forward_resolved(%{correlator: correlator} = state, anomaly)
+       when not is_nil(correlator) do
+    if process_alive?(correlator) do
+      try do
+        Autoangel.Correlate.anomaly_resolved(correlator, anomaly)
+      catch
+        :exit, _reason -> :ok
+      end
+    else
+      dispatch_direct(state, {:anomaly_resolved, anomaly})
+    end
   end
 
-  defp dispatcher_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
-  defp dispatcher_alive?(name) when is_atom(name), do: is_pid(Process.whereis(name))
-  defp dispatcher_alive?(_), do: false
+  defp forward_resolved(state, anomaly),
+    do: dispatch_direct(state, {:anomaly_resolved, anomaly})
+
+  defp dispatch_direct(%{dispatcher: nil}, _event), do: :ok
+
+  defp dispatch_direct(%{dispatcher: dispatcher}, event) do
+    if process_alive?(dispatcher), do: send_event(dispatcher, event)
+    :ok
+  end
+
+  defp process_alive?(pid) when is_pid(pid), do: Process.alive?(pid)
+  defp process_alive?(name) when is_atom(name), do: is_pid(Process.whereis(name))
+  defp process_alive?(_), do: false
 
   defp send_event(dispatcher, event) do
     Dispatcher.event(dispatcher, event)

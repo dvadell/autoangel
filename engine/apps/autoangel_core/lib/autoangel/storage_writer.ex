@@ -50,6 +50,10 @@ defmodule Autoangel.Storage.Writer do
   @spec enqueue(GenServer.server(), atom(), term()) :: :ok | :not_ready | :full
   def enqueue(server, kind, item), do: GenServer.call(server, {:enqueue, kind, [item]})
 
+  @doc "Enqueue an item asynchronously, never blocking the caller on a flush."
+  @spec enqueue_async(GenServer.server(), atom(), term()) :: :ok
+  def enqueue_async(server, kind, item), do: GenServer.cast(server, {:enqueue, kind, [item]})
+
   @spec stats(GenServer.server()) :: stats()
   def stats(server), do: GenServer.call(server, :stats)
 
@@ -235,7 +239,14 @@ defmodule Autoangel.Storage.Writer do
       do: backend.append_samples(handle, samples),
       else: write_other(backend, handle, kind, samples)
   rescue
-    exception -> {:retryable, {:exception, exception}}
+    exception in [KeyError, FunctionClauseError, ArgumentError, BadMapError] ->
+      # A structural mismatch (wrong row shape, unsupported kind) can never
+      # succeed on retry, so dropping it permanently keeps one malformed item
+      # from wedging the queue behind an endless retry.
+      {:permanent, {:exception, exception}}
+
+    exception ->
+      {:retryable, {:exception, exception}}
   catch
     _kind, reason -> {:retryable, {:throw, reason}}
   end

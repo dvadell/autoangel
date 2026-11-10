@@ -1,12 +1,26 @@
 defmodule Autoangel.Correlator.Supervisor do
-  @moduledoc "Placeholder supervision boundary for the in-memory correlator."
+  @moduledoc "Supervision boundary for the in-memory Correlator."
   use Supervisor
 
   def start_link(opts \\ []),
     do: Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
 
   @impl true
-  def init(_opts), do: Supervisor.init([], strategy: :one_for_one)
+  def init(opts) do
+    correlate_opts =
+      opts
+      |> Keyword.take([
+        :window_ms,
+        :pool_limit,
+        :support_threshold,
+        :pair_cap,
+        :dispatcher,
+        :storage_writer
+      ])
+      |> Keyword.put(:name, Autoangel.Correlate)
+
+    Supervisor.init([{Autoangel.Correlate, correlate_opts}], strategy: :one_for_one)
+  end
 end
 
 defmodule Autoangel.Alert.Supervisor do

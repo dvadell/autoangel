@@ -46,7 +46,10 @@ defmodule Autoangel.Application do
              max_batch: 2,
              dispatcher: Autoangel.Alert.Dispatcher
            )},
-          {Autoangel.Correlator.Supervisor, []},
+          {Autoangel.Correlator.Supervisor,
+           window_ms: seconds(config, [:correlation, :window], 600),
+           pool_limit: get_in(config, [:correlation, :candidate_pool_limit]) || 20,
+           support_threshold: get_in(config, [:correlation, :support_threshold]) || 2},
           {Autoangel.Alert.Supervisor, plugins: plugins, state_store: Autoangel.StateStore},
           storage_child(storage, config),
           scrape_child(config),
