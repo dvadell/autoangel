@@ -67,7 +67,34 @@ defmodule Autoangel.Alert.Policy do
   @spec mute(state(), {:series, term()} | {:incident, term()}) :: state()
   def mute(state, {kind, _} = target) when kind in [:series, :incident] do
     state = normalize_state(state)
-    %{state | mutes: MapSet.put(state.mutes, target)}
+    state = %{state | mutes: MapSet.put(state.mutes, target)}
+    mark_incident_muted(state, target)
+  end
+
+  # Muting an Incident flags it so no further notification is sent for it
+  # (Req 30.1); the flag is checked wherever Incident notifications are emitted.
+  # An Incident's id is itself `{:incident, n}`, the same value used as its
+  # mute target.
+  defp mark_incident_muted(state, {:incident, _} = id) do
+    case Map.fetch(state.incidents, id) do
+      {:ok, incident} ->
+        %{state | incidents: Map.put(state.incidents, id, Map.put(incident, :muted?, true))}
+
+      :error ->
+        state
+    end
+  end
+
+  defp mark_incident_muted(state, _target), do: state
+
+  @doc """
+  True when notifications for this Incident must be suppressed: the Incident is
+  muted, or the Series it belongs to is muted.
+  """
+  @spec notifications_muted?(state(), map()) :: boolean()
+  def notifications_muted?(state, incident) do
+    Map.get(incident, :muted?, false) or muted?(state, Map.get(incident, :id)) or
+      Enum.any?(Map.get(incident, :series_keys, []), &muted?(state, {:series, &1}))
   end
 
   @doc "True when the target is muted."
@@ -130,7 +157,8 @@ defmodule Autoangel.Alert.Policy do
           anomalies: %{Map.get(anomaly, :id) => anomaly},
           opened_at: Map.get(anomaly, :start_ms, now_ms),
           closed_at: nil,
-          open?: true
+          open?: true,
+          muted?: muted?(state, {:series, series_key})
         }
 
         alert = build_alert(anomaly, candidates, state)
@@ -142,7 +170,11 @@ defmodule Autoangel.Alert.Policy do
             next_id: state.next_id + 1
         }
 
-        deliveries = Enum.map(state.plugins, &{:deliver, &1, alert})
+        # A muted Series still opens (and dedupes into) an Incident so detection
+        # and the Incident record continue, but no alert is sent (Req 30.1).
+        deliveries =
+          if incident.muted?, do: [], else: Enum.map(state.plugins, &{:deliver, &1, alert})
+
         {next, [{:open_incident, incident}, {:persist, {:open, incident}} | deliveries]}
     end
   end
