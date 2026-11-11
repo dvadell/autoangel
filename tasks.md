@@ -556,7 +556,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
 - [x] 25. Checkpoint - M2 Explain complete
   - Ensure all tests pass, ask the user if questions arise.
 
-  - [-] 25.1 Wire configured detection settings into the Workers
+  - [x] 25.1 Wire configured detection settings into the Workers
     - Found at the M2 checkpoint: `Autoangel.Application` starts the Workers with an empty `decision_cfg`, so configured `learning`, `persistence` and `missing_data` values never reach `Decision`; detection always uses the built-in defaults (which equal the Config defaults), and a replay's config digest can name settings that were not applied
     - Pass the detection sections of the loaded configuration to every Worker; test that a non-default value changes detection through the started application
     - _Requirements: 10.2, 10.3, 11.1, 14.1, 14.2, 77.5_

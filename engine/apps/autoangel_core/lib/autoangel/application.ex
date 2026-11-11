@@ -45,6 +45,7 @@ defmodule Autoangel.Application do
           {Autoangel.Workers,
            Keyword.merge(common,
              state_store: Autoangel.StateStore,
+             decision_cfg: decision_cfg(config),
              sweep_interval: seconds(config, [:missing_data, :sweep_interval], 15),
              scrape_status_table: :autoangel_scrape_status,
              queue_capacity: 20_000,
@@ -102,6 +103,10 @@ defmodule Autoangel.Application do
         error
     end
   end
+
+  @doc "The detection settings of the loaded configuration that every Worker applies."
+  @spec decision_cfg(map()) :: map()
+  def decision_cfg(config), do: Map.take(config, [:learning, :persistence, :missing_data])
 
   @impl true
   def prep_stop(state) do
