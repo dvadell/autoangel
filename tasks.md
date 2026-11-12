@@ -563,7 +563,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
 
 ### M3: Console web
 
-- [ ] 26. Set up the Console project, schema queries, startup checks and authentication
+- [x] 26. Set up the Console project, schema queries, startup checks and authentication
   - [x] 26.1 Create the Console Phoenix LiveView project
     - Separate Mix project and release with Bandit, a read-only `Console.Repo`, no Rust or Rustler, optional TLS, configuration validation for the Engine-not-reporting threshold (default 60 s) and other Console settings
     - Add a CI check that the Console tree, release and image contain no Rust source, Rustler dependency or NIF
@@ -585,7 +585,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - **Property 57: Console queries stay within bounds**
     - **Validates: Requirements 65.5, 65.6, 66.5**
 
-  - [~]* 26.6 Adopt the shared schema library in the Engine and add the version check (P1)
+  - [x]* 26.6 Adopt the shared schema library in the Engine and add the version check (P1)
     - Make `autoangel_tsdb` depend on `autoangel_schema` definitions, declare the Schema_Version in the library, and add a CI check that fails and reports both values when it differs from the newest migration
     - _Requirements: 66.1, 66.2, 66.3, 66.4, 66.5_
 

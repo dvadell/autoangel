@@ -48,4 +48,9 @@ if ! grep -Fqx "$root/scripts/console_no_rust_check.sh" <<<"$output"; then
   exit 1
 fi
 
+if ! grep -Fq "mix autoangel.schema_version_check" <<<"$output"; then
+  printf 'quality gate is missing command: %s\n' "mix autoangel.schema_version_check" >&2
+  exit 1
+fi
+
 printf 'quality gate command matrix is complete\n'

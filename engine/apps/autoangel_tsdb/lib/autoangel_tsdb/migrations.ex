@@ -1,11 +1,31 @@
 defmodule AutoangelTsdb.Migrations do
   @moduledoc "Idempotent, versioned SQL migrations owned by the Engine."
 
-  @schema_version 3
+  # The Schema_Version is declared once, in the shared schema library that the
+  # Console also reads. `@migration_versions` lists every `apply_one/3` clause;
+  # `mix autoangel.schema_version_check` fails when the two disagree.
+  @schema_version AutoangelSchema.version()
+  @migration_versions [1, 2, 3]
 
-  @doc "The schema contract version supported by this backend."
+  @doc "The schema contract version supported by this backend (from `AutoangelSchema`)."
   @spec version() :: 3
   def version, do: @schema_version
+
+  @doc "The version of the newest migration this module can apply."
+  @spec newest_migration() :: 3
+  def newest_migration, do: Enum.max(@migration_versions)
+
+  @doc "`:ok` when the declared Schema_Version equals the newest migration."
+  @spec check_version() :: :ok | {:error, %{declared: integer(), newest_migration: integer()}}
+  def check_version, do: check_version(version(), newest_migration())
+
+  @doc false
+  @spec check_version(integer(), integer()) ::
+          :ok | {:error, %{declared: integer(), newest_migration: integer()}}
+  def check_version(same, same), do: :ok
+
+  def check_version(declared, newest),
+    do: {:error, %{declared: declared, newest_migration: newest}}
 
   @doc "Runs every pending migration. Each version is committed only after success."
   @spec run(Postgrex.conn(), keyword()) :: :ok | {:error, term()}

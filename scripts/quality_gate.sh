@@ -47,6 +47,7 @@ run_rust_checks() {
 }
 
 run_elixir_checks engine
+run_labeled engine bash -c "cd '$root/engine' && mix autoangel.schema_version_check"
 run "$root/scripts/dependency_checks.sh"
 run_elixir_checks console
 run "$root/scripts/console_no_rust_check.sh"

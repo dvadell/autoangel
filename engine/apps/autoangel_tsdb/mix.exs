@@ -25,7 +25,8 @@ defmodule AutoangelTsdb.MixProject do
       {:stream_data, "~> 1.1", only: [:dev, :test]},
       {:postgrex, "~> 0.19"},
       {:jason, "~> 1.4"},
-      {:autoangel_core, in_umbrella: true}
+      {:autoangel_core, in_umbrella: true},
+      {:autoangel_schema, path: "../../../shared/autoangel_schema"}
     ]
   end
 end
