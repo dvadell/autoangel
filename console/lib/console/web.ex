@@ -3,10 +3,17 @@ defmodule Console.Router do
   use Phoenix.Router
 
   import Plug.Conn
+  import Phoenix.Controller
+  import Phoenix.LiveView.Router
 
   pipeline :protected do
+    plug(:accepts, ["html"])
     plug(:fetch_session)
     plug(Console.Auth)
+    plug(:fetch_live_flash)
+    plug(:put_root_layout, html: {Console.Layouts, :root})
+    plug(:protect_from_forgery)
+    plug(:put_secure_browser_headers)
   end
 
   pipeline :health do
@@ -20,7 +27,13 @@ defmodule Console.Router do
 
   scope "/", Console do
     pipe_through(:protected)
-    get("/", PageController, :index)
+
+    live_session :console, on_mount: [{Console.Auth, :require_auth}, Console.Live.EngineStatus] do
+      live("/", AnomalyListLive)
+      live("/series", SeriesLive.Index)
+      live("/series/:id", SeriesLive.Show)
+      live("/anomalies/:id", AnomalyLive.Show)
+    end
   end
 
   @doc false
@@ -38,18 +51,6 @@ defmodule Console.HealthController do
   def show(conn, _params), do: json(conn, %{status: "ok"})
 end
 
-defmodule Console.PageController do
-  @moduledoc "Placeholder landing page; the LiveView pages arrive with task 27."
-  use Phoenix.Controller, formats: [:html]
-
-  def index(conn, _params) do
-    html(
-      conn,
-      "<!DOCTYPE html><html lang=\"en\"><title>Autoangel Console</title><h1>Autoangel Console</h1></html>"
-    )
-  end
-end
-
 defmodule Console.Endpoint do
   @moduledoc "The Console HTTP endpoint (Bandit), with LiveView socket and signed session cookie."
   use Phoenix.Endpoint, otp_app: :autoangel_console
@@ -63,6 +64,19 @@ defmodule Console.Endpoint do
   ]
 
   socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
+
+  # LiveView JavaScript, straight from the deps' priv/static (no asset build).
+  plug(Plug.Static,
+    at: "/assets/phoenix",
+    from: {:phoenix, "priv/static"},
+    only: ~w(phoenix.min.js)
+  )
+
+  plug(Plug.Static,
+    at: "/assets/live",
+    from: {:phoenix_live_view, "priv/static"},
+    only: ~w(phoenix_live_view.min.js)
+  )
 
   plug(Plug.RequestId)
   plug(Plug.Head)

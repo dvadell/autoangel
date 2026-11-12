@@ -593,48 +593,48 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Each startup failure case, denied requests return no data and trigger no Control_API action
     - _Requirements: 57.2, 57.4, 58.1, 58.3, 58.4_
 
-- [ ] 27. Implement the Console views
-  - [~] 27.1 Implement `AnomalyListLive`
+- [x] 27. Implement the Console views
+  - [x] 27.1 Implement `AnomalyListLive`
     - Open Anomalies and those ended within the recent period (default 24 h), open first, newest first within groups; all fields with the score labelled "anomaly score"; stored candidates by rank with weak markers; empty, no-candidates and database-error states
     - _Requirements: 17.6, 17.7, 19.4, 19.6, 19.7, 51.1, 51.2, 51.3, 51.4, 51.5, 51.6, 51.7_
 
-  - [~] 27.2 Implement `SeriesLive.Index`
+  - [x] 27.2 Implement `SeriesLive.Index`
     - List all Series with stored status; case-sensitive substring search over name, label names and label values via `strpos`; no-match and database-error states keeping the term
     - _Requirements: 52.1, 52.2, 52.3, 52.4, 52.5_
 
-  - [~] 27.3 Implement chart data selection and `SeriesLive.Show`
+  - [x] 27.3 Implement chart data selection and `SeriesLive.Show`
     - Range selector (1 h to 13 months), tier selection raw / 1-minute / 1-hour by retention and the chart point limit (default 2,000), counter rates with reset handling, expected band from `baseline_bands` and its aggregate, Anomaly markers by interval overlap, no-data and error states
     - _Requirements: 53.1, 53.2, 53.3, 53.4, 53.5, 53.6, 53.7_
 
-  - [~] 27.4 Implement `AnomalyLive.Show` at `/anomalies/:id`
+  - [x] 27.4 Implement `AnomalyLive.Show` at `/anomalies/:id`
     - All Anomaly fields, chart around the Anomaly with the same tier rules, stored candidates or the no-candidates statement, not-found and database-unreachable pages
     - _Requirements: 21.2, 21.3, 54.1, 54.2, 54.3, 54.4, 54.5, 54.6, 54.7_
 
-  - [~] 27.5 Implement the Engine-not-reporting banner
+  - [x] 27.5 Implement the Engine-not-reporting banner
     - Global component reading the latest Heartbeat on mount and every 10 s; show the time or "no Heartbeat recorded"; keep serving stored data
     - _Requirements: 56.1, 56.2, 56.3, 56.4, 65.9_
 
-  - [~] 27.6 Implement `Console.EngineClient` and feedback buttons
+  - [x] 27.6 Implement `Console.EngineClient` and feedback buttons
     - "mute" and "this is normal" on Series views and detail pages, one Control_API request per press targeting the Series or the Incident, confirmation or "not applied" error, buttons disabled while `/readyz` polling fails and re-enabled after recovery, no database writes
     - _Requirements: 30.4, 55.1, 55.2, 55.3, 55.4, 55.5, 55.6, 55.7, 55.8, 65.10_
 
-  - [~]* 27.7 Write property test for the anomaly list
+  - [x]* 27.7 Write property test for the anomaly list
     - **Property 53: Anomaly list selection and order**
     - **Validates: Requirements 51.1, 51.3**
 
-  - [~]* 27.8 Write property test for Series search
+  - [x]* 27.8 Write property test for Series search
     - **Property 54: Series search is case-sensitive substring matching**
     - **Validates: Requirements 52.1, 52.2, 52.3**
 
-  - [~]* 27.9 Write property test for chart tier selection
+  - [x]* 27.9 Write property test for chart tier selection
     - **Property 55: Chart tier selection**
     - **Validates: Requirements 53.2, 53.3, 53.4**
 
-  - [~]* 27.10 Write property test for the banner predicate
+  - [x]* 27.10 Write property test for the banner predicate
     - **Property 56: Engine-not-reporting banner predicate**
     - **Validates: Requirements 56.1, 56.2, 56.4**
 
-  - [~]* 27.11 Write LiveView tests for empty, error and feedback states
+  - [x]* 27.11 Write LiveView tests for empty, error and feedback states
     - Every empty, error and not-found state in Requirements 51 to 56; feedback flows against a fake Control_API
     - _Requirements: 51.6, 51.7, 52.4, 52.5, 53.6, 53.7, 54.5, 54.6, 55.5, 55.7, 55.8_
 

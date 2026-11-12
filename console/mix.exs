@@ -19,7 +19,7 @@ defmodule AutoangelConsole.MixProject do
   end
 
   def application do
-    [mod: {Console.Application, []}, extra_applications: [:logger, :runtime_tools]]
+    [mod: {Console.Application, []}, extra_applications: [:logger, :runtime_tools, :inets, :ssl]]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -40,7 +40,9 @@ defmodule AutoangelConsole.MixProject do
       {:plug_crypto, "~> 2.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
-      {:stream_data, "~> 1.1", only: [:dev, :test]}
+      {:stream_data, "~> 1.1", only: [:dev, :test]},
+      # LiveViewTest parses HTML with it; test only, never in the release.
+      {:lazy_html, "~> 0.1.14", only: :test}
     ]
   end
 end

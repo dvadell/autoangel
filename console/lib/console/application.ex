@@ -53,15 +53,20 @@ defmodule Console.Application do
 
   defp repo_query(sql), do: Repo.query(sql, [], timeout: 5_000)
 
-  defp publish(config) do
-    Application.put_env(:autoangel_console, :auth, config.auth)
-    Application.put_env(:autoangel_console, :health_exempt, config.health_exempt)
+  @published [
+    :auth,
+    :health_exempt,
+    :engine_not_reporting_seconds,
+    :engine_url,
+    :engine_token,
+    :recent_seconds,
+    :chart_point_limit,
+    :raw_retention_seconds,
+    :aggregate_retention_seconds
+  ]
 
-    Application.put_env(
-      :autoangel_console,
-      :engine_not_reporting_seconds,
-      config.engine_not_reporting_seconds
-    )
+  defp publish(config) do
+    for key <- @published, do: Application.put_env(:autoangel_console, key, Map.fetch!(config, key))
   end
 
   defp endpoint_options(%{tls: nil} = config) do
@@ -85,7 +90,9 @@ defmodule Console.Application do
       server: true,
       secret_key_base: config.secret_key_base,
       adapter: Bandit.PhoenixAdapter,
-      live_view: [signing_salt: "console-live-view"]
+      live_view: [signing_salt: "console-live-view"],
+      # Accept the LiveView socket only from the host the page was served from.
+      check_origin: :conn
     ]
   end
 end

@@ -13,6 +13,12 @@ defmodule Console.Config do
   | `AUTOANGEL_CONSOLE_TOKEN` | static bearer token | none |
   | `AUTOANGEL_CONSOLE_HEALTH_EXEMPT` | `true` lets `/healthz` skip authentication | `false` |
   | `AUTOANGEL_CONSOLE_SECRET_KEY_BASE` | signs the session cookie, at least 64 bytes | required |
+  | `AUTOANGEL_CONSOLE_ENGINE_URL` | Engine Control_API base URL for feedback | none (feedback off) |
+  | `AUTOANGEL_CONSOLE_ENGINE_TOKEN` | bearer token for the Control_API | none |
+  | `AUTOANGEL_CONSOLE_RECENT_SECONDS` | how long ended Anomalies stay listed | `86400` |
+  | `AUTOANGEL_CONSOLE_CHART_POINT_LIMIT` | most points a chart draws | `2000` |
+  | `AUTOANGEL_CONSOLE_RAW_RETENTION_SECONDS` | Engine raw retention | `1209600` (14 d) |
+  | `AUTOANGEL_CONSOLE_AGGREGATE_RETENTION_SECONDS` | Engine aggregate retention | `34128000` (395 d) |
 
   Credentials are required: with none configured the Console refuses to start.
   """
@@ -30,7 +36,13 @@ defmodule Console.Config do
           engine_not_reporting_seconds: pos_integer(),
           auth: [auth()],
           health_exempt: boolean(),
-          secret_key_base: String.t()
+          secret_key_base: String.t(),
+          engine_url: String.t() | nil,
+          engine_token: String.t() | nil,
+          recent_seconds: pos_integer(),
+          chart_point_limit: pos_integer(),
+          raw_retention_seconds: pos_integer(),
+          aggregate_retention_seconds: pos_integer()
         }
 
   @doc "Validates the environment. Returns every problem found, not just the first."
@@ -48,13 +60,22 @@ defmodule Console.Config do
         ),
       auth: parse_auth(get(env, "USER"), get(env, "PASSWORD"), get(env, "TOKEN")),
       health_exempt: parse_boolean(get(env, "HEALTH_EXEMPT"), "HEALTH_EXEMPT"),
-      secret_key_base: parse_secret(get(env, "SECRET_KEY_BASE"))
+      secret_key_base: parse_secret(get(env, "SECRET_KEY_BASE")),
+      engine_url: parse_url(get(env, "ENGINE_URL")),
+      recent_seconds: positive(env, "RECENT_SECONDS", 86_400),
+      chart_point_limit: positive(env, "CHART_POINT_LIMIT", 2_000),
+      raw_retention_seconds: positive(env, "RAW_RETENTION_SECONDS", 14 * 86_400),
+      aggregate_retention_seconds: positive(env, "AGGREGATE_RETENTION_SECONDS", 395 * 86_400)
     ]
 
     case Enum.flat_map(parsed, fn {_key, result} -> List.wrap(error_of(result)) end) do
       [] ->
         values = Map.new(parsed, fn {key, {:ok, value}} -> {key, value} end)
-        {:ok, Map.put(values, :database_url, get(env, "DATABASE_URL"))}
+
+        {:ok,
+         values
+         |> Map.put(:database_url, get(env, "DATABASE_URL"))
+         |> Map.put(:engine_token, get(env, "ENGINE_TOKEN"))}
 
       errors ->
         {:error, errors}
@@ -110,6 +131,20 @@ defmodule Console.Config do
     case Integer.parse(value) do
       {n, ""} when n > 0 -> {:ok, n}
       _ -> {:error, "#{var(name)} must be a positive integer"}
+    end
+  end
+
+  defp positive(env, name, default), do: parse_positive_integer(get(env, name), default, name)
+
+  defp parse_url(nil), do: {:ok, nil}
+
+  defp parse_url(value) do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
+        {:ok, value}
+
+      _ ->
+        {:error, "#{var("ENGINE_URL")} must be an http or https URL"}
     end
   end
 

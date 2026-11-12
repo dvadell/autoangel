@@ -4,13 +4,6 @@ defmodule Console.AuthTest do
   import Plug.Conn
   import Plug.Test
 
-  @opts Console.Router.init([])
-  @session_opts Plug.Session.init(
-                  store: :cookie,
-                  key: "_t",
-                  signing_salt: "console-session"
-                )
-
   setup do
     previous = Application.get_all_env(:autoangel_console)
     Application.put_env(:autoangel_console, :auth, [{:basic, "ops", "pw"}, {:bearer, "tok"}])
@@ -22,12 +15,13 @@ defmodule Console.AuthTest do
   end
 
   defp request(path, headers \\ []) do
-    conn =
-      Enum.reduce(headers, conn(:get, path), fn {k, v}, acc -> put_req_header(acc, k, v) end)
+    headers
+    |> Enum.reduce(conn(:get, path), fn {k, v}, acc -> put_req_header(acc, k, v) end)
+    |> Console.Endpoint.call(Console.Endpoint.init([]))
+  end
 
-    conn = %{conn | secret_key_base: String.duplicate("k", 64)}
-    conn = Plug.Session.call(conn, @session_opts)
-    Console.Router.call(conn, @opts)
+  defp session(conn) do
+    conn |> Plug.Conn.fetch_session() |> get_session("console_authenticated")
   end
 
   defp basic(user, pass), do: {"authorization", "Basic " <> Base.encode64("#{user}:#{pass}")}
@@ -82,7 +76,7 @@ defmodule Console.AuthTest do
 
   test "an authenticated request marks the session; a socket without it is refused" do
     conn = request("/", [basic("ops", "pw")])
-    assert get_session(conn, "console_authenticated") == true
+    assert session(conn) == true
 
     socket = %Phoenix.LiveView.Socket{}
 

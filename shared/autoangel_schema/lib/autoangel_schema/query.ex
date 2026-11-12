@@ -99,10 +99,82 @@ defmodule AutoangelSchema.Query do
   alias AutoangelSchema.{Anomaly, AnomalyCandidate, BaselineBand, EngineStatus, Sample, Series}
   alias AutoangelSchema.Query.Bounds
 
-  @doc "Series ordered by name, at most `series_limit`."
-  @spec series(Bounds.t()) :: Ecto.Query.t()
-  def series(%Bounds{series_limit: limit}),
-    do: from(s in Series, order_by: [asc: s.name, asc: s.id], limit: ^limit)
+  @doc """
+  Series ordered by name, at most `row_limit`. With a non-empty `search` term,
+  only Series whose name, a label name or a label value contains the term
+  (case-sensitive, `strpos`) are returned.
+  """
+  @spec series(Bounds.t(), String.t() | nil) :: Ecto.Query.t()
+  def series(%Bounds{row_limit: limit}, search \\ nil) do
+    query = from(s in Series, order_by: [asc: s.name, asc: s.id], limit: ^limit)
+
+    case search do
+      term when is_binary(term) and term != "" ->
+        from(s in query,
+          where:
+            fragment("strpos(?, ?) > 0", s.name, ^term) or
+              fragment(
+                "EXISTS (SELECT 1 FROM jsonb_each_text(?) AS kv WHERE strpos(kv.key, ?) > 0 OR strpos(kv.value, ?) > 0)",
+                s.labels,
+                ^term,
+                ^term
+              )
+        )
+
+      _ ->
+        query
+    end
+  end
+
+  @doc "The given Series (at most `series_limit` of them)."
+  @spec series_by_ids([Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()
+  def series_by_ids(ids, %Bounds{series_limit: limit}) when is_list(ids) do
+    ids = Enum.take(ids, limit)
+    from(s in Series, where: s.id in ^ids, limit: ^limit)
+  end
+
+  @doc """
+  Aggregated points (`:minute` -> `samples_1m`, `:hour` -> `samples_1h`) of at most
+  `series_limit` Series inside the range, as `%{series_id, ts, value}` with the
+  bucket mean as value.
+  """
+  @spec aggregate(:minute | :hour, [Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()
+  def aggregate(tier, series_ids, %Bounds{} = b) when tier in [:minute, :hour] do
+    ids = series_ids |> Enum.take(b.series_limit) |> Enum.map(&Ecto.UUID.dump!/1)
+    source = if tier == :minute, do: "samples_1m", else: "samples_1h"
+
+    from(s in source,
+      where: s.series_id in ^ids and s.bucket >= ^b.from and s.bucket <= ^b.to,
+      order_by: [asc: s.bucket],
+      limit: ^b.row_limit,
+      select: %{series_id: type(s.series_id, Ecto.UUID), ts: s.bucket, value: s.mean}
+    )
+  end
+
+  @doc "Hourly aggregate of the expected band (`baseline_bands_1h`) inside the range."
+  @spec band_aggregate([Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()
+  def band_aggregate(series_ids, %Bounds{} = b) do
+    ids = series_ids |> Enum.take(b.series_limit) |> Enum.map(&Ecto.UUID.dump!/1)
+
+    from(s in "baseline_bands_1h",
+      where: s.series_id in ^ids and s.bucket >= ^b.from and s.bucket <= ^b.to,
+      order_by: [asc: s.bucket],
+      limit: ^b.row_limit,
+      select: %{
+        series_id: type(s.series_id, Ecto.UUID),
+        ts: s.bucket,
+        lower_bound: s.minimum,
+        upper_bound: s.maximum
+      }
+    )
+  end
+
+  @doc "Number of raw samples in the range, counted up to `row_limit + 1`."
+  @spec sample_count([Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()
+  def sample_count(series_ids, %Bounds{} = b) do
+    inner = samples(series_ids, %{b | row_limit: b.row_limit + 1})
+    from(s in subquery(select(inner, [s], %{ts: s.ts})), select: count())
+  end
 
   @doc "Raw samples of at most `series_limit` of the given Series inside the range."
   @spec samples([Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()
@@ -128,15 +200,34 @@ defmodule AutoangelSchema.Query do
     )
   end
 
-  @doc "Anomalies that started inside the range or are still open, open first, newest first."
+  @doc """
+  Anomalies that are open, or that ended inside the range; open first, newest
+  start first within each group.
+  """
   @spec anomalies(Bounds.t()) :: Ecto.Query.t()
   def anomalies(%Bounds{} = b) do
     from(a in Anomaly,
-      where: (a.start_time >= ^b.from and a.start_time <= ^b.to) or is_nil(a.end_time),
-      order_by: [asc: not is_nil(a.end_time), desc: a.start_time],
+      where: is_nil(a.end_time) or (a.end_time >= ^b.from and a.end_time <= ^b.to),
+      order_by: [asc: not is_nil(a.end_time), desc: a.start_time, asc: a.id],
       limit: ^b.row_limit
     )
   end
+
+  @doc "Anomalies of one Series whose interval overlaps the range (open ones end now)."
+  @spec anomalies_overlapping(Ecto.UUID.t(), Bounds.t()) :: Ecto.Query.t()
+  def anomalies_overlapping(series_id, %Bounds{} = b) do
+    from(a in Anomaly,
+      where:
+        a.series_id == ^series_id and a.start_time <= ^b.to and
+          (is_nil(a.end_time) or a.end_time >= ^b.from),
+      order_by: [asc: a.start_time],
+      limit: ^b.row_limit
+    )
+  end
+
+  @doc "One Anomaly by id."
+  @spec anomaly(Ecto.UUID.t()) :: Ecto.Query.t()
+  def anomaly(id), do: from(a in Anomaly, where: a.id == ^id, limit: 1)
 
   @doc "Stored candidates of at most `row_limit` Anomalies, by rank."
   @spec candidates([Ecto.UUID.t()], Bounds.t()) :: Ecto.Query.t()

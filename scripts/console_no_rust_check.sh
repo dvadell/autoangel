@@ -32,9 +32,12 @@ for path in "${paths[@]}"; do
   done < <(find "$path" \( -name deps -o -name _build \) -prune -o \
     \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock -o -name 'rust-toolchain*' \) -print)
 
+  # Test-only build output (_build/test, e.g. the LiveViewTest HTML parser) and
+  # fetched sources never ship; the release and image are checked as given.
   while IFS= read -r file; do
     fail "native library found (NIF): $file"
-  done < <(find "$path" \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+  done < <(find "$path" \( -path '*/_build/test' -o -name deps \) -prune -o \
+    \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
     -not -path '*/erts-*' -not -path '*/lib/crypto-*' -not -path '*/lib/asn1rt_nif-*' \
     -not -path '*/lib/runtime_tools-*' -not -path '*/lib/os_mon-*' -not -path '*/lib/jinterface-*' \
     -not -path '*/lib/erl_interface-*' -print)
