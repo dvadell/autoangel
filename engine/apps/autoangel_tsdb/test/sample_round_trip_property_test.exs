@@ -21,7 +21,7 @@ defmodule AutoangelTsdb.SampleRoundTripPropertyTest do
 
   @conn_opts [
     hostname: "127.0.0.1",
-    port: 5433,
+    port: String.to_integer(System.get_env("AUTOANGEL_TEST_DB_PORT", "5433")),
     username: "autoangel",
     password: "autoangel",
     database: "autoangel"

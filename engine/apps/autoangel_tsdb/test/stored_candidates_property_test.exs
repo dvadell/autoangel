@@ -2,7 +2,7 @@ defmodule AutoangelTsdb.StoredCandidatesPropertyTest do
   @moduledoc """
   Property 26: stored Candidates round trip (Req 21.1, 21.3, 21.4, 21.5).
 
-  Runs against real TimescaleDB (127.0.0.1:5433) in a private schema and skips
+  Runs against real TimescaleDB (127.0.0.1, port from AUTOANGEL_TEST_DB_PORT, default 5433) in a private schema and skips
   gracefully when the database is unreachable.
   """
   use ExUnit.Case, async: false
@@ -16,7 +16,7 @@ defmodule AutoangelTsdb.StoredCandidatesPropertyTest do
 
   @conn_opts [
     hostname: "127.0.0.1",
-    port: 5433,
+    port: String.to_integer(System.get_env("AUTOANGEL_TEST_DB_PORT", "5433")),
     username: "autoangel",
     password: "autoangel",
     database: "autoangel",
@@ -52,7 +52,7 @@ defmodule AutoangelTsdb.StoredCandidatesPropertyTest do
   end
 
   defp reachable? do
-    case :gen_tcp.connect(~c"127.0.0.1", 5433, [], 1_000) do
+    case :gen_tcp.connect(~c"127.0.0.1", String.to_integer(System.get_env("AUTOANGEL_TEST_DB_PORT", "5433")), [], 1_000) do
       {:ok, socket} -> :gen_tcp.close(socket) == :ok
       _ -> false
     end
