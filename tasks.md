@@ -564,24 +564,24 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
 ### M3: Console web
 
 - [ ] 26. Set up the Console project, schema queries, startup checks and authentication
-  - [~] 26.1 Create the Console Phoenix LiveView project
+  - [x] 26.1 Create the Console Phoenix LiveView project
     - Separate Mix project and release with Bandit, a read-only `Console.Repo`, no Rust or Rustler, optional TLS, configuration validation for the Engine-not-reporting threshold (default 60 s) and other Console settings
     - Add a CI check that the Console tree, release and image contain no Rust source, Rustler dependency or NIF
     - _Requirements: 56.5, 56.6, 57.5, 65.1, 65.2, 65.3, 65.7_
 
-  - [~] 26.2 Implement Ecto schemas and bounded query helpers in `shared/autoangel_schema`
+  - [x] 26.2 Implement Ecto schemas and bounded query helpers in `shared/autoangel_schema`
     - Read-only `AutoangelSchema.Query.*` helpers requiring range, Series limit and row limit, clamped to the Console maximums (400 d, 50, 10,000) and returning which clamp applied; `AutoangelSchema.supported_versions/0`
     - _Requirements: 65.3, 65.4, 65.5, 65.6_
 
-  - [~] 26.3 Implement Console startup checks
+  - [x] 26.3 Implement Console startup checks
     - Before the Endpoint starts: database configured, connection succeeds, `schema_version` exists and has a value, value is supported; otherwise log the specific reason (including found and supported versions) and halt non-zero; read-only operations only
     - _Requirements: 58.1, 58.2, 58.3, 58.4, 58.5, 58.6_
 
-  - [~] 26.4 Implement `Console.Auth`, the router and `/healthz`
+  - [x] 26.4 Implement `Console.Auth`, the router and `/healthz`
     - Static basic credentials or bearer token for pages and LiveView sockets; deny with no metric data; health endpoint authenticated unless explicitly exempted, returning only `{"status":"ok"}`
     - _Requirements: 57.1, 57.2, 57.3, 57.4, 74.1, 74.6, 74.7, 76.1, 76.2_
 
-  - [~]* 26.5 Write property test for Console query bounds
+  - [x]* 26.5 Write property test for Console query bounds
     - **Property 57: Console queries stay within bounds**
     - **Validates: Requirements 65.5, 65.6, 66.5**
 
@@ -589,7 +589,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Make `autoangel_tsdb` depend on `autoangel_schema` definitions, declare the Schema_Version in the library, and add a CI check that fails and reports both values when it differs from the newest migration
     - _Requirements: 66.1, 66.2, 66.3, 66.4, 66.5_
 
-  - [~]* 26.7 Write unit tests for startup checks and authentication
+  - [x]* 26.7 Write unit tests for startup checks and authentication
     - Each startup failure case, denied requests return no data and trigger no Control_API action
     - _Requirements: 57.2, 57.4, 58.1, 58.3, 58.4_
 
