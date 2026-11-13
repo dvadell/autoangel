@@ -479,6 +479,8 @@ defmodule Autoangel.Kernel.Scoring do
         else: {:error, :invalid_params}
     end
 
+    defp validate_params(_), do: {:error, :invalid_params}
+
     defp valid_scales?(params) do
       Enum.all?([params.mad_scale, params.scale_floor, params.scale_fraction], fn value ->
         is_number(value) and finite?(value) and value > 0
@@ -489,8 +491,6 @@ defmodule Autoangel.Kernel.Scoring do
       finite?(params.score_threshold) and params.score_threshold >= 0 and
         params.score_threshold <= 100
     end
-
-    defp validate_params(_), do: {:error, :invalid_params}
 
     defp valid_change_params?(params) do
       positive_integer?(params.level_shift_min_samples) and

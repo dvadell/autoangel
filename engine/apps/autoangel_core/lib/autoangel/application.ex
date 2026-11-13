@@ -67,6 +67,7 @@ defmodule Autoangel.Application do
            plugins: plugins,
            state_store: Autoangel.StateStore,
            console_base_url: get_in(config, [:alerts, :console_base_url]),
+           grouping_window_ms: seconds(config, [:correlation, :window], 600),
            max_candidates: get_in(config, [:alerts, :max_candidates]) || 5}
           |> with_clock(clock),
           {Autoangel.Feedback,

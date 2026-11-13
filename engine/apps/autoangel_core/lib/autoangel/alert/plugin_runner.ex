@@ -23,6 +23,8 @@ defmodule Autoangel.Alert.PluginRunner do
             timer: nil,
             breaker: :closed,
             consecutive_failures: 0,
+            reporter: nil,
+            reporter: nil,
             failures: [],
             metrics: %{success: 0, retryable: 0, permanent: 0, timeout: 0, skipped: 0, dropped: 0}
 
@@ -65,7 +67,8 @@ defmodule Autoangel.Alert.PluginRunner do
       breaker_threshold: Keyword.get(opts, :breaker_threshold, @default_breaker_threshold),
       cooloff: Keyword.get(opts, :cooloff, @default_cooloff),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
-      observer: Keyword.get(opts, :observer)
+      observer: Keyword.get(opts, :observer),
+      reporter: Keyword.get(opts, :reporter)
     }
 
     {:ok, state}
@@ -173,8 +176,9 @@ defmodule Autoangel.Alert.PluginRunner do
     |> Map.put(:timer, timer)
   end
 
-  defp handle_result(state, _alert, _attempt, :ok) do
+  defp handle_result(state, alert, _attempt, :ok) do
     cancel_timer(state.timer)
+    report_delivered(state, alert)
 
     state = %{
       state
@@ -288,6 +292,18 @@ defmodule Autoangel.Alert.PluginRunner do
 
     %{state | metrics: Map.update(state.metrics, key, 1, &(&1 + 1))}
   end
+
+  # Tells the Dispatcher that the alert of an Incident arrived, so the Incident's
+  # resolution can follow to the same plugin. Resolutions themselves are not reported.
+  defp report_delivered(%{reporter: reporter, plugin: plugin}, %{incident_id: id} = alert)
+       when not is_nil(reporter) and not is_nil(id) do
+    unless Map.get(alert, :resolved?, false),
+      do: GenServer.cast(reporter, {:delivered, id, plugin})
+
+    :ok
+  end
+
+  defp report_delivered(_state, _alert), do: :ok
 
   defp notify_observer(%{observer: observer, plugin: plugin} = state, outcome)
        when is_pid(observer) do

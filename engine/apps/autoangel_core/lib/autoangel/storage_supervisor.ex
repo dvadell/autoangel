@@ -38,12 +38,15 @@ defmodule Autoangel.Alert.Supervisor do
     Supervisor.init(
       [
         {Autoangel.Alert.PluginSupervisor,
-         Keyword.put(opts, :name, Autoangel.Alert.PluginSupervisor)},
+         opts
+         |> Keyword.put(:name, Autoangel.Alert.PluginSupervisor)
+         |> Keyword.put_new(:reporter, Autoangel.Alert.Dispatcher)},
         {Autoangel.Alert.Dispatcher,
          [
            state_store: Keyword.get(opts, :state_store, Autoangel.StateStore),
            plugins: plugins
-         ] ++ Keyword.take(opts, [:console_base_url, :max_candidates, :now])}
+         ] ++
+           Keyword.take(opts, [:console_base_url, :max_candidates, :now, :grouping_window_ms])}
       ],
       strategy: :one_for_one
     )

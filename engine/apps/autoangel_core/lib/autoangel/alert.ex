@@ -19,5 +19,10 @@ defmodule Autoangel.Alert do
             anomaly: nil,
             candidates: [],
             candidate_count: 0,
-            console_url: nil
+            console_url: nil,
+            incident_id: nil,
+            members: [],
+            end_time: nil,
+            end_time_iso: nil,
+            resolved?: false
 end

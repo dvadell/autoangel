@@ -781,28 +781,28 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - **Property 18: Direction filtering**
     - **Validates: Requirements 15.3, 15.4, 15.5**
 
-- [ ] 36. Implement sensitivity overrides, event-like correlation, grouping and resolutions
-  - [~]* 36.1 Implement global and configured per-Series sensitivity overrides (P1)
+- [x] 36. Implement sensitivity overrides, event-like correlation, grouping and resolutions
+  - [x]* 36.1 Implement global and configured per-Series sensitivity overrides (P1)
     - Precedence per-Series, then global, then default; valid range 0.25 to 4.0 validated at startup; restore overrides from the State_Store before the first score
     - _Requirements: 31.1, 31.2, 31.3, 31.4, 31.5, 31.6_
 
-  - [~]* 36.2 Implement event-like classification (P1)
+  - [x]* 36.2 Implement event-like classification (P1)
     - Classify in Worker meta (Typical_Interval ≥ 10 min or spacing coefficient of variation > 1.0), pass the flag to the Correlator and describe event-like evidence as window co-occurrence
     - _Requirements: 20.1, 20.2, 20.3, 20.4_
 
-  - [~]* 36.3 Implement Incident grouping (P1)
+  - [x]* 36.3 Implement Incident grouping (P1)
     - Join the closest qualifying open Incident within the window without a separate alert; keep the Incident open until the last member resolves; render member Series in notifications
     - _Requirements: 28.1, 28.2, 28.3, 28.4_
 
-  - [~]* 36.4 Implement resolution notifications (P1)
+  - [x]* 36.4 Implement resolution notifications (P1)
     - On close, send one resolution per plugin whose original delivery succeeded, with resolved indication, members, start and end times and the Console link when configured; same timeout, retry and breaker handling
     - _Requirements: 29.1, 29.2, 29.3, 29.4_
 
-  - [~]* 36.5 Write property test for resolution routing
+  - [x]* 36.5 Write property test for resolution routing
     - **Property 29: Resolution notifications go only where the alert arrived**
     - **Validates: Requirements 29.1**
 
-  - [~]* 36.6 Write unit tests for grouping and sensitivity configuration
+  - [x]* 36.6 Write unit tests for grouping and sensitivity configuration
     - Closest-Incident tie breaks, invalid sensitivity values, restore order
     - _Requirements: 28.1, 31.5, 31.6_
 

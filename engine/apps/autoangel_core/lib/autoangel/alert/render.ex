@@ -45,9 +45,72 @@ defmodule Autoangel.Alert.Render do
     }
   end
 
+  @doc """
+  Builds the resolution notification of a closed Incident (Requirements 29.1 to 29.4):
+  a resolved indication, every member Series, the start and end times, and the
+  Console link when a base URL is configured.
+  """
+  @spec resolution(map(), keyword()) :: Alert.t()
+  def resolution(incident, opts \\ []) when is_map(incident) do
+    anomalies =
+      incident
+      |> Map.get(:anomalies, %{})
+      |> Map.values()
+      |> Enum.sort_by(&Map.get(&1, :start_ms, 0))
+
+    first = List.first(anomalies) || %{}
+    ended = incident |> Map.get(:closed_at) |> end_time(anomalies)
+
+    %Alert{
+      name: metric_name(incident.series_key),
+      labels: labels_from_key(incident.series_key),
+      resolved?: true,
+      incident_id: incident_number(Map.get(incident, :id)),
+      members: Enum.map(Map.get(incident, :series_keys, [incident.series_key]), &member/1),
+      start_time: Map.get(incident, :opened_at),
+      start_time_iso: iso(Map.get(incident, :opened_at)),
+      end_time: ended,
+      end_time_iso: iso(ended),
+      anomaly_id: Map.get(first, :id),
+      console_url: console_url(Keyword.get(opts, :console_base_url), Map.get(first, :id))
+    }
+  end
+
+  defp incident_number({:incident, n}), do: n
+  defp incident_number(other), do: other
+
+  defp member(key), do: %{name: metric_name(key), labels: labels_from_key(key)}
+
+  defp end_time(closed_at, _anomalies) when is_integer(closed_at), do: closed_at
+
+  defp end_time(_closed_at, anomalies),
+    do:
+      anomalies
+      |> Enum.map(&Map.get(&1, :end_ms))
+      |> Enum.filter(&is_integer/1)
+      |> Enum.max(fn -> nil end)
+
   @doc "Formats an alert (or a self-monitoring alert) as neutral plain text."
   @spec text(map()) :: String.t()
   def text(%{message: message}) when is_binary(message), do: message
+
+  def text(%{resolved?: true} = alert) do
+    members = field(alert, :members) || []
+
+    lines =
+      [
+        {"status", "resolved"},
+        {"metric", field(alert, :name)},
+        {"labels", format_labels(field(alert, :labels) || %{})},
+        {"start", field(alert, :start_time_iso)},
+        {"end", field(alert, :end_time_iso)},
+        {"console", field(alert, :console_url)}
+      ]
+      |> Enum.reject(fn {_name, value} -> is_nil(value) or value == "" end)
+      |> Enum.map(fn {name, value} -> "#{name}: #{value}" end)
+
+    Enum.join(lines ++ member_lines(members), "\n")
+  end
 
   def text(alert) when is_map(alert) do
     lines =
@@ -93,6 +156,13 @@ defmodule Autoangel.Alert.Render do
 
   def score(_), do: nil
 
+  defp member_lines(members) do
+    ["members:" | Enum.map(members, fn m -> "- #{m.name}#{member_labels(m.labels)}" end)]
+  end
+
+  defp member_labels(labels) when labels == %{}, do: ""
+  defp member_labels(labels), do: " [#{format_labels(labels)}]"
+
   defp candidate_lines([]), do: ["no candidates found inside the Correlation_Window"]
 
   defp candidate_lines(candidates) do
@@ -103,7 +173,8 @@ defmodule Autoangel.Alert.Render do
     c = candidate(candidate)
     labels = if c.labels == %{}, do: "", else: " [#{format_labels(c.labels)}]"
     weak = if c.weak?, do: " (weak evidence)", else: ""
-    "#{c.rank || "?"}. #{c.name}#{labels}#{weak}"
+    window = if c.event_like?, do: " (co-occurrence inside the window)", else: ""
+    "#{c.rank || "?"}. #{c.name}#{labels}#{weak}#{window}"
   end
 
   defp candidate(c) when is_map(c) do
@@ -113,11 +184,16 @@ defmodule Autoangel.Alert.Render do
       rank: field(c, :rank),
       name: field(c, :name) || field(c, :metric_name) || metric_name(key) || "?",
       labels: field(c, :labels) || labels(%{}, key),
-      weak?: field(c, :weak?) == true or field(c, :weak_evidence) == true
+      weak?: field(c, :weak?) == true or field(c, :weak_evidence) == true,
+      event_like?: field(c, :event_like?) == true or event_like?(field(c, :evidence))
     }
   end
 
-  defp candidate(_), do: %{rank: nil, name: "?", labels: %{}, weak?: false}
+  defp candidate(_), do: %{rank: nil, name: "?", labels: %{}, weak?: false, event_like?: false}
+
+  # Event-like Series are not described by lag or order, only by co-occurrence.
+  defp event_like?(evidence) when is_map(evidence), do: field(evidence, :event_like?) == true
+  defp event_like?(_evidence), do: false
 
   defp top(candidates, max) do
     candidates

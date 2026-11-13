@@ -12,6 +12,7 @@ defmodule Autoangel.Alert.Policy do
           cooldowns: map(),
           next_id: pos_integer(),
           cooldown_ms: pos_integer(),
+          grouping_window_ms: non_neg_integer(),
           plugins: list(),
           render: keyword(),
           mutes: MapSet.t()
@@ -57,6 +58,7 @@ defmodule Autoangel.Alert.Policy do
       cooldowns: cooldowns,
       next_id: next_id,
       cooldown_ms: Keyword.get(opts, :cooldown_ms, @default_cooldown_ms),
+      grouping_window_ms: Keyword.get(opts, :grouping_window_ms, 0),
       plugins: Keyword.get(opts, :plugins, []),
       render: Keyword.get(opts, :render, []),
       mutes: MapSet.new(Keyword.get(opts, :mutes, []))
@@ -118,6 +120,9 @@ defmodule Autoangel.Alert.Policy do
       {:anomaly_resolved, anomaly} ->
         resolve(state, anomaly, now_ms)
 
+      {:delivered, incident_id, plugin} ->
+        delivered(state, incident_id, plugin)
+
       {:feedback, _feedback} ->
         {state, []}
 
@@ -148,35 +153,95 @@ defmodule Autoangel.Alert.Policy do
         {state, []}
 
       true ->
-        id = {:incident, state.next_id}
-
-        incident = %{
-          id: id,
-          series_key: series_key,
-          series_keys: [series_key],
-          anomalies: %{Map.get(anomaly, :id) => anomaly},
-          opened_at: Map.get(anomaly, :start_ms, now_ms),
-          closed_at: nil,
-          open?: true,
-          muted?: muted?(state, {:series, series_key})
-        }
-
-        alert = build_alert(anomaly, candidates, state)
-
-        next = %{
-          state
-          | incidents: Map.put(state.incidents, id, incident),
-            series_incident: Map.put(state.series_incident, series_key, id),
-            next_id: state.next_id + 1
-        }
-
-        # A muted Series still opens (and dedupes into) an Incident so detection
-        # and the Incident record continue, but no alert is sent (Req 30.1).
-        deliveries =
-          if incident.muted?, do: [], else: Enum.map(state.plugins, &{:deliver, &1, alert})
-
-        {next, [{:open_incident, incident}, {:persist, {:open, incident}} | deliveries]}
+        case join_target(state, anomaly) do
+          nil -> open_incident(state, anomaly, candidates, series_key, now_ms)
+          id -> join_incident(state, id, anomaly, series_key)
+        end
     end
+  end
+
+  defp open_incident(state, anomaly, candidates, series_key, now_ms) do
+    id = {:incident, state.next_id}
+
+    incident = %{
+      id: id,
+      series_key: series_key,
+      series_keys: [series_key],
+      anomalies: %{Map.get(anomaly, :id) => anomaly},
+      opened_at: Map.get(anomaly, :start_ms, now_ms),
+      closed_at: nil,
+      open?: true,
+      muted?: muted?(state, {:series, series_key}),
+      delivered_to: [],
+      resolution_sent_to: []
+    }
+
+    alert = %{build_alert(anomaly, candidates, state) | incident_id: id_number(id)}
+
+    next = %{
+      state
+      | incidents: Map.put(state.incidents, id, incident),
+        series_incident: Map.put(state.series_incident, series_key, id),
+        next_id: state.next_id + 1
+    }
+
+    # A muted Series still opens (and dedupes into) an Incident so detection
+    # and the Incident record continue, but no alert is sent (Req 30.1).
+    deliveries =
+      if incident.muted?, do: [], else: Enum.map(state.plugins, &{:deliver, &1, alert})
+
+    {next, [{:open_incident, incident}, {:persist, {:open, incident}} | deliveries]}
+  end
+
+  # --- grouping (Requirements 28.1 to 28.4) -------------------------------------
+  #
+  # An Anomaly whose start is within the grouping window of an open Incident joins
+  # the closest one, with no separate alert. Ties go to the lowest Incident number.
+  defp join_target(state, anomaly) do
+    start = Map.get(anomaly, :start_ms)
+
+    if is_integer(start) and Map.get(state, :grouping_window_ms, 0) > 0 do
+      state.incidents
+      |> Enum.filter(fn {_id, incident} -> Map.get(incident, :open?, false) end)
+      |> Enum.map(fn {id, incident} -> {distance(incident, start), id_number(id), id} end)
+      |> Enum.filter(fn {distance, _n, _id} -> distance <= state.grouping_window_ms end)
+      |> Enum.min(fn -> nil end)
+      |> case do
+        nil -> nil
+        {_distance, _n, id} -> id
+      end
+    end
+  end
+
+  defp distance(incident, start) do
+    incident
+    |> Map.get(:anomalies, %{})
+    |> Map.values()
+    |> Enum.map(&Map.get(&1, :start_ms))
+    |> Enum.filter(&is_integer/1)
+    |> Enum.map(&abs(&1 - start))
+    |> Enum.min(fn -> :infinity end)
+  end
+
+  defp id_number({:incident, n}) when is_integer(n), do: n
+  defp id_number(_id), do: 0
+
+  defp join_incident(state, id, anomaly, series_key) do
+    incident = Map.fetch!(state.incidents, id)
+
+    incident = %{
+      incident
+      | series_keys: Enum.uniq(incident.series_keys ++ [series_key]),
+        anomalies: Map.put(incident.anomalies, Map.get(anomaly, :id), anomaly)
+    }
+
+    next = %{
+      state
+      | incidents: Map.put(state.incidents, id, incident),
+        series_incident: Map.put(state.series_incident, series_key, id)
+    }
+
+    {next, [{:join_incident, id, series_key}, {:persist, {:open, incident}}]}
   end
 
   defp resolve(state, anomaly, now_ms) when is_map(anomaly) do
@@ -191,25 +256,64 @@ defmodule Autoangel.Alert.Policy do
         anomalies = Map.put(incident.anomalies, Map.get(anomaly, :id), anomaly)
         incident = %{incident | anomalies: anomalies}
 
-        if Enum.all?(Map.values(anomalies), &(not is_nil(Map.get(&1, :end_ms)))) do
-          closed = %{incident | open?: false, closed_at: now_ms}
-          cooldown = now_ms + cooldown_ms(state)
-
-          next = %{
-            state
-            | incidents: Map.put(state.incidents, id, closed),
-              series_incident: remove_members(state.series_incident, incident.series_keys),
-              cooldowns: Map.put(state.cooldowns, series_key, cooldown)
-          }
-
-          {next, [{:close_incident, closed}, {:persist, {:close, closed}}]}
-        else
-          {%{state | incidents: Map.put(state.incidents, id, incident)}, []}
-        end
+        if Enum.all?(Map.values(anomalies), &(not is_nil(Map.get(&1, :end_ms)))),
+          do: close_incident(state, id, incident, now_ms),
+          else: {%{state | incidents: Map.put(state.incidents, id, incident)}, []}
     end
   end
 
   defp resolve(state, _anomaly, _now), do: {state, []}
+
+  # The Incident stays open until its last member resolves. On close, one
+  # resolution goes to each plugin whose original delivery succeeded
+  # (Requirements 29.1 to 29.3).
+  defp close_incident(state, id, incident, now_ms) do
+    delivered = Map.get(incident, :delivered_to, [])
+    sent = if notifications_muted?(state, incident), do: [], else: delivered
+    closed = %{incident | open?: false, closed_at: now_ms, resolution_sent_to: sent}
+    cooldown = now_ms + cooldown_ms(state)
+
+    next = %{
+      state
+      | incidents: Map.put(state.incidents, id, closed),
+        series_incident: remove_members(state.series_incident, incident.series_keys),
+        cooldowns: Enum.reduce(incident.series_keys, state.cooldowns, &Map.put(&2, &1, cooldown))
+    }
+
+    resolution = Render.resolution(closed, Map.get(state, :render, []))
+    deliveries = Enum.map(sent, &{:deliver, &1, resolution})
+    {next, [{:close_incident, closed}, {:persist, {:close, closed}} | deliveries]}
+  end
+
+  # A plugin reports that the original alert of an Incident arrived. When the
+  # Incident has already closed, its resolution goes out now (Requirement 29.1).
+  defp delivered(state, id, plugin) do
+    id = if is_integer(id), do: {:incident, id}, else: id
+
+    case Map.fetch(state.incidents, id) do
+      {:ok, incident} -> mark_delivered(state, id, incident, plugin)
+      :error -> {state, []}
+    end
+  end
+
+  defp mark_delivered(state, id, incident, plugin) do
+    delivered = Enum.uniq(Map.get(incident, :delivered_to, []) ++ [plugin])
+    incident = Map.put(incident, :delivered_to, delivered)
+    state = %{state | incidents: Map.put(state.incidents, id, incident)}
+
+    if not Map.get(incident, :open?, true) and
+         plugin not in Map.get(incident, :resolution_sent_to, []) and
+         not notifications_muted?(state, incident) do
+      sent = Map.get(incident, :resolution_sent_to, []) ++ [plugin]
+      incident = Map.put(incident, :resolution_sent_to, sent)
+      resolution = Render.resolution(incident, Map.get(state, :render, []))
+
+      {%{state | incidents: Map.put(state.incidents, id, incident)},
+       [{:deliver, plugin, resolution}]}
+    else
+      {state, []}
+    end
+  end
 
   defp build_alert(anomaly, candidates, state),
     do: Render.build(anomaly, candidates, Map.get(state, :render, []))

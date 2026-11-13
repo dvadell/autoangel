@@ -58,11 +58,13 @@ defmodule Autoangel.Alert.Dispatcher do
         Policy.new(
           incidents: incidents,
           cooldown_ms: cooldown,
+          grouping_window_ms: Keyword.get(opts, :grouping_window_ms, 0),
           plugins: Map.keys(runners),
           now_ms: now.()
         )
       )
       |> Map.put(:cooldown_ms, cooldown)
+      |> Map.put_new(:grouping_window_ms, Keyword.get(opts, :grouping_window_ms, 0))
       |> Map.put(:plugins, Map.keys(runners))
       |> Map.put(:render, render_opts(opts))
       |> Map.put(:mutes, restored_mutes(Keyword.get(opts, :state_store)))
@@ -89,6 +91,15 @@ defmodule Autoangel.Alert.Dispatcher do
   end
 
   @impl true
+  # A plugin runner reports that the alert of an Incident was delivered; the
+  # Incident's resolution will go to that plugin (Requirement 29.1).
+  def handle_cast({:delivered, incident_id, plugin_module}, state) do
+    event = {:delivered, incident_id, plugin_key(plugin_module)}
+    {policy, actions} = Policy.on_event(state.policy, event, state.now.())
+    dispatch(actions, state)
+    {:noreply, %{state | policy: policy}}
+  end
+
   def handle_cast({:event, event}, state) do
     {policy, actions} = Policy.on_event(state.policy, event, state.now.())
     dispatch(actions, state)
