@@ -10,6 +10,9 @@ defmodule Autoangel.Storage.Writer do
   use GenServer
   require Logger
 
+  alias Autoangel.Exposition.Sample
+  alias Autoangel.Storage.Rows
+
   @default_capacity 200_000
   @default_batch_size 5_000
   @default_retry_ms 500
@@ -232,7 +235,7 @@ defmodule Autoangel.Storage.Writer do
 
   defp write_batch(%{backend: backend, handle: handle, batch_observer: observer}, batch, uuid) do
     {kind, _} = List.first(batch)
-    samples = Enum.map(batch, fn {_kind, item} -> with_batch_uuid(item, uuid) end)
+    samples = Enum.map(batch, fn {_kind, item} -> item |> with_batch_uuid(uuid) |> as_row(kind) end)
     if is_function(observer, 2), do: observer.(uuid, samples)
 
     if kind == :sample,
@@ -256,6 +259,11 @@ defmodule Autoangel.Storage.Writer do
   end
 
   defp with_batch_uuid(item, _uuid), do: item
+
+  # Raw Samples from ingest become backend rows; other items are rows already.
+  defp as_row(%Sample{} = sample, :sample), do: Rows.sample(sample)
+
+  defp as_row(item, _kind), do: item
 
   defp write_other(backend, handle, :series, items), do: backend.write_series(handle, items)
   defp write_other(backend, handle, :band, items), do: backend.write_bands(handle, items)

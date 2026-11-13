@@ -53,4 +53,5 @@ run_elixir_checks console
 run "$root/scripts/console_no_rust_check.sh"
 run_elixir_checks shared/autoangel_schema
 run_elixir_checks replay
+run_elixir_checks faults
 run_rust_checks

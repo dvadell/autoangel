@@ -643,16 +643,16 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Role creation with USAGE and SELECT on all tables plus default privileges; test that the role reads every object and is refused every write and DDL statement
     - _Requirements: 42.1, 42.2, 42.3_
 
-- [ ] 29. Implement the fault-injection suite
-  - [~] 29.1 Build the fault-injection environment and harness
+- [x] 29. Implement the fault-injection suite
+  - [x] 29.1 Build the fault-injection environment and harness
     - Compose environment with the Engine release, TimescaleDB behind Toxiproxy, the Console, and fake SMTP and Telegram servers; harness that runs a reference and a fault run on the same replay fixtures with the simulated clock, compares delivered alerts and reports pass or fail per check
     - _Requirements: 73.1_
 
-  - [~] 29.2 Implement storage and Console fault tests
+  - [x] 29.2 Implement storage and Console fault tests
     - TimescaleDB stopped and restarted, slow writes, Console stopped, Storage_Writer killed, with the checks from the design table
     - _Requirements: 65.8, 73.2, 73.3, 73.4, 73.5, 73.6_
 
-  - [~] 29.3 Implement plugin, Worker and restart fault tests
+  - [x] 29.3 Implement plugin, Worker and restart fault tests
     - One plugin failing, a Worker killed, an Engine restart on the same State_Store volume
     - _Requirements: 73.7, 73.8, 73.9_
 

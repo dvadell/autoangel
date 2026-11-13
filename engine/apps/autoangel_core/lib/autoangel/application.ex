@@ -80,7 +80,12 @@ defmodule Autoangel.Application do
            storage_writer: storage_writer},
           Supervisor.child_spec(
             {Autoangel.HTTP.Listener,
-             Keyword.merge(common, role: :ingest, name: Autoangel.HTTP.IngestListener)},
+             Keyword.merge(common,
+               role: :ingest,
+               name: Autoangel.HTTP.IngestListener,
+               storage_writer: storage_writer,
+               self_monitor: Autoangel.SelfMonitor
+             )},
             id: :ingest_listener
           )
         ]

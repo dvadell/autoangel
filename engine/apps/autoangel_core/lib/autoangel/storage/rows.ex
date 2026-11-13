@@ -59,6 +59,30 @@ defmodule Autoangel.Storage.Rows do
     %{anomaly: anomaly_row(anomaly, status)}
   end
 
+  @doc """
+  A raw ingested Sample as the backend row: Series id and metadata (so the
+  backend can create a missing Series row), millisecond timestamp, value and the
+  batch uuid. Rows that are already maps pass through.
+  """
+  @spec sample(Autoangel.Exposition.Sample.t() | map()) :: map()
+  def sample(%Autoangel.Exposition.Sample{} = sample) do
+    key = SeriesRegistry.canonical_key(sample.name, sample.labels)
+    {name, labels} = key
+
+    %{
+      series_id: SeriesRegistry.series_id(key),
+      name: name,
+      labels: Map.new(labels),
+      kind: sample.series_kind || :gauge,
+      status: :learning,
+      ts_ms: sample.timestamp || sample.received_at,
+      value: sample.value,
+      batch_uuid: sample.batch_uuid
+    }
+  end
+
+  def sample(row) when is_map(row), do: row
+
   @spec band(series_key(), integer(), number(), number(), atom() | String.t()) :: map()
   def band(key, ts_ms, lower, upper, baseline_type) do
     %{

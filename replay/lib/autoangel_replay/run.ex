@@ -36,13 +36,23 @@ defmodule AutoangelReplay.Run do
     :scrape_targets
   ]
 
-  @spec run([Series.t()], [map()], integer()) :: map()
-  def run(series, labels, seed) do
+  @doc """
+  Replays `series` and reports. Options (used by the fault-injection harness):
+
+    * `:config_toml` - extra TOML appended to the harness configuration
+    * `:plugins` - plugin names to enable (default `["capture"]`)
+    * `:on_step` - `fun.(step, total, ctx)` called after the Engine has settled
+      following each timestamp group; `ctx` is `%{restart_engine: fun, kill_worker: fun}`
+    * `:include_alerts` - add the delivered alerts as `:found` (`%{series_key, start_ms}`)
+    * `:keep_running` - leave the Engine running afterwards and add `:stop` (a 0-arity fun)
+  """
+  @spec run([Series.t()], [map()], integer(), keyword()) :: map()
+  def run(series, labels, seed, opts \\ []) do
     {ingest_port, control_port} = ports()
     # Fresh credentials per run, so nothing else on the network can push into
     # or control the Engine under test.
     tokens = %{ingest: token(), control: token()}
-    config = engine_config(ingest_port, control_port, tokens)
+    config = engine_config(ingest_port, control_port, tokens, opts)
     dir = Path.join(System.tmp_dir!(), "autoangel-replay-#{System.unique_integer([:positive])}")
     samples = merged(series)
     {first_ts, _, _} = hd(samples)
@@ -51,37 +61,98 @@ defmodule AutoangelReplay.Run do
 
     previous_state_path = System.get_env("AUTOANGEL_STATE_PATH")
 
-    try do
-      start_engine(config, clock, dir)
-      sweep_ms = round(Map.fetch!(config.missing_data, :sweep_interval) * 1_000)
-      feed(samples, clock, {ingest_port, tokens.ingest}, sweep_ms)
-      alerts = await_alerts()
-      report(series, labels, alerts, config, seed, sweep_ms)
-    after
+    cleanup = fn ->
       stop_engine(previous_state_path)
       Agent.stop(capture)
       Agent.stop(clock)
       File.rm_rf(dir)
     end
+
+    try do
+      start_engine(config, clock, dir)
+      sweep_ms = round(Map.fetch!(config.missing_data, :sweep_interval) * 1_000)
+      ctx = step_context(config, clock, dir)
+      feed(samples, clock, {ingest_port, tokens.ingest}, sweep_ms, Keyword.get(opts, :on_step), ctx)
+      alerts = await_alerts()
+      {report(series, labels, alerts, config, seed, sweep_ms), alerts}
+    rescue
+      error ->
+        cleanup.()
+        reraise error, __STACKTRACE__
+    else
+      {result, alerts} ->
+        unless Keyword.get(opts, :keep_running, false), do: cleanup.()
+        finish(result, alerts, opts, cleanup)
+    end
+  end
+
+  defp finish(result, alerts, opts, cleanup) do
+    result =
+      if Keyword.get(opts, :include_alerts, false),
+        do: Map.put(result, :found, found(alerts)),
+        else: result
+
+    if Keyword.get(opts, :keep_running, false), do: Map.put(result, :stop, cleanup), else: result
+  end
+
+  defp found(alerts),
+    do: for(a <- alerts, do: %{series_key: a.anomaly.series_key, start_ms: a.start_time})
+
+  # Handles for a fault hook: restart the Engine on the same State_Store path, or
+  # kill one Worker and wait for its supervisor to bring it back.
+  defp step_context(config, clock, dir) do
+    %{
+      restart_engine: fn ->
+        _ = Application.stop(:autoangel_core)
+        Process.delete(:autoangel_replay_workers)
+        start_engine(config, clock, dir)
+      end,
+      kill_worker: fn index ->
+        pids = workers()
+        victim = Autoangel.Workers.worker(index)
+        Process.delete(:autoangel_replay_workers)
+        ref = Process.monitor(victim)
+        Process.exit(victim, :kill)
+        receive do: ({:DOWN, ^ref, _, _, _} -> :ok)
+
+        wait_until(
+          fn ->
+            new = Autoangel.Workers.worker(index)
+            is_pid(new) and new != victim and length(workers_now()) == length(pids)
+          end,
+          10_000
+        )
+
+        Process.delete(:autoangel_replay_workers)
+        victim
+      end
+    }
+  end
+
+  defp workers_now do
+    for {_id, pid, _, _} <- Supervisor.which_children(Autoangel.Workers), is_pid(pid), do: pid
   end
 
   # --- Engine lifecycle ---------------------------------------------------------
 
-  defp engine_config(ingest_port, control_port, tokens) do
-    toml = """
-    [ingest]
-    token = "#{tokens.ingest}"
-    [control_api]
-    token = "#{tokens.control}"
-    [http]
-    ingest_port = #{ingest_port}
-    control_port = #{control_port}
-    [ingest_rate_limit]
-    rate = 1000000
-    burst = 1000000
-    [plugins]
-    enabled = ["capture"]
-    """
+  defp engine_config(ingest_port, control_port, tokens, opts) do
+    plugins = opts |> Keyword.get(:plugins, ["capture"]) |> Enum.map_join(", ", &~s("#{&1}"))
+
+    toml =
+      """
+      [ingest]
+      token = "#{tokens.ingest}"
+      [control_api]
+      token = "#{tokens.control}"
+      [http]
+      ingest_port = #{ingest_port}
+      control_port = #{control_port}
+      [ingest_rate_limit]
+      rate = 1000000
+      burst = 1000000
+      [plugins]
+      enabled = [#{plugins}]
+      """ <> "\n" <> Keyword.get(opts, :config_toml, "")
 
     {:ok, config} = Autoangel.Config.load(toml, %{})
     config
@@ -117,17 +188,20 @@ defmodule AutoangelReplay.Run do
     |> Enum.sort_by(fn {ts, s, _v} -> {ts, Series.key(s)} end)
   end
 
-  defp feed(samples, clock, target, sweep_ms) do
+  defp feed(samples, clock, target, sweep_ms, on_step, ctx) do
     {first, _, _} = hd(samples)
+    groups = Enum.chunk_by(samples, &elem(&1, 0))
+    total = length(groups)
 
     next_sweep =
-      samples
-      |> Enum.chunk_by(&elem(&1, 0))
-      |> Enum.reduce(first + sweep_ms, fn [{ts, _, _} | _] = group, next_sweep ->
+      groups
+      |> Enum.with_index(1)
+      |> Enum.reduce(first + sweep_ms, fn {[{ts, _, _} | _] = group, step}, next_sweep ->
         next_sweep = sweep_until(clock, next_sweep, ts, sweep_ms)
         Simulated.set(clock, ts)
         push(target, group)
         settle()
+        if on_step, do: on_step.(step, total, ctx)
         next_sweep
       end)
 
@@ -215,7 +289,7 @@ defmodule AutoangelReplay.Run do
       span_ms: Enum.max(timestamps) - Enum.min(timestamps)
     }
 
-    found = for a <- alerts, do: %{series_key: a.anomaly.series_key, start_ms: a.start_time}
+    found = found(alerts)
 
     Map.merge(Report.compute(labels, found, params), %{
       config_digest: digest(config),

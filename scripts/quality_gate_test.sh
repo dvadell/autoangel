@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 output=$(cd /tmp && QUALITY_GATE_DRY_RUN=1 "$root/scripts/quality_gate.sh")
 
-projects=(engine console shared/autoangel_schema replay)
+projects=(engine console shared/autoangel_schema replay faults)
 commands=(
   "mix format --check-formatted"
   "mix credo --strict"

@@ -19,7 +19,7 @@ defmodule Autoangel.HTTP.Listener do
     config = Keyword.get(opts, :config, Application.get_env(:autoangel_core, :config, %{}))
 
     with {:ok, tls} <- tls_options(config),
-         {:ok, ingest} <- listener_options(:ingest, config, tls),
+         {:ok, ingest} <- listener_options(:ingest, config, tls, ingest_plug_options(opts)),
          {:ok, control} <- listener_options(:control_api, config, tls),
          :ok <- distinct_ports(ingest, control) do
       children =
@@ -64,8 +64,10 @@ defmodule Autoangel.HTTP.Listener do
 
   def tls_options(_), do: {:error, {:tls, :invalid_configuration}}
 
-  @spec listener_options(atom(), map(), tls_options()) :: {:ok, keyword()} | {:error, term()}
-  def listener_options(role, config, tls) when role in [:ingest, :control_api] do
+  @spec listener_options(atom(), map(), tls_options(), keyword()) ::
+          {:ok, keyword()} | {:error, term()}
+  def listener_options(role, config, tls, plug_options \\ [])
+      when role in [:ingest, :control_api] do
     ports = Map.get(config, :http, %{})
     port_key = if role == :ingest, do: :ingest_port, else: :control_port
     port = Map.get(ports, port_key, default_port(role))
@@ -73,7 +75,7 @@ defmodule Autoangel.HTTP.Listener do
     if is_integer(port) and port in 1..65_535 do
       {:ok,
        [
-         plug: plug_for(role),
+         plug: plug_with(plug_for(role), plug_options),
          scheme: scheme(tls),
          port: port
        ] ++ tls_transport_options(tls)}
@@ -89,6 +91,15 @@ defmodule Autoangel.HTTP.Listener do
       do: {:error, {:port, :must_be_distinct}},
       else: :ok
   end
+
+  # The ingest plug hands raw Samples to the Storage_Writer and reports accepted
+  # Samples to the SelfMonitor; both are passed in when they are configured.
+  defp ingest_plug_options(opts) do
+    opts |> Keyword.take([:storage_writer, :self_monitor]) |> Enum.reject(&is_nil(elem(&1, 1)))
+  end
+
+  defp plug_with(plug, []), do: plug
+  defp plug_with(plug, options), do: {plug, options}
 
   defp plug_for(:ingest), do: Autoangel.HTTP.AuthenticatedIngest
   defp plug_for(:control_api), do: Autoangel.HTTP.Control

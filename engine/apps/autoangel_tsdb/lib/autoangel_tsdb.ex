@@ -197,7 +197,7 @@ defmodule AutoangelTsdb do
   end
 
   defp write_transaction(tx, batch_uuid, rows, series) do
-    with :ok <- upsert_series(tx, series),
+    with :ok <- insert_missing_series(tx, series),
          {:ok, %{num_rows: rows_inserted}} <-
            Postgrex.query(
              tx,
@@ -209,6 +209,30 @@ defmodule AutoangelTsdb do
     else
       {:error, reason} -> Postgrex.rollback(tx, reason)
     end
+  end
+
+  # A Sample batch only makes sure its Series rows exist; the Worker owns the
+  # Series status, so an existing row is never overwritten from here.
+  defp insert_missing_series(_conn, []), do: :ok
+
+  defp insert_missing_series(conn, rows) do
+    rows
+    |> Enum.map(&series_tuple/1)
+    |> Enum.reduce_while(:ok, fn {id, name, labels, kind, status}, :ok ->
+      sql =
+        "INSERT INTO series (id, name, labels, kind, status) VALUES ($1, $2, $3::jsonb, $4, $5) ON CONFLICT DO NOTHING"
+
+      case Postgrex.query(conn, sql, [
+             id,
+             name,
+             Jason.encode!(labels),
+             to_string(kind),
+             to_string(status)
+           ]) do
+        {:ok, _} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
   end
 
   defp upsert_series(_conn, []), do: :ok

@@ -52,7 +52,12 @@ defmodule AutoangelTsdb.StoredCandidatesPropertyTest do
   end
 
   defp reachable? do
-    case :gen_tcp.connect(~c"127.0.0.1", String.to_integer(System.get_env("AUTOANGEL_TEST_DB_PORT", "5433")), [], 1_000) do
+    case :gen_tcp.connect(
+           ~c"127.0.0.1",
+           String.to_integer(System.get_env("AUTOANGEL_TEST_DB_PORT", "5433")),
+           [],
+           1_000
+         ) do
       {:ok, socket} -> :gen_tcp.close(socket) == :ok
       _ -> false
     end
