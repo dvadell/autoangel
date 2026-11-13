@@ -638,8 +638,8 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Every empty, error and not-found state in Requirements 51 to 56; feedback flows against a fake Control_API
     - _Requirements: 51.6, 51.7, 52.4, 52.5, 53.6, 53.7, 54.5, 54.6, 55.5, 55.7, 55.8_
 
-- [ ] 28. Implement the read-only role SQL
-  - [~] 28.1 Add `docs/readonly-role.sql` and its integration test
+- [x] 28. Implement the read-only role SQL
+  - [x] 28.1 Add `docs/readonly-role.sql` and its integration test
     - Role creation with USAGE and SELECT on all tables plus default privileges; test that the role reads every object and is refused every write and DDL statement
     - _Requirements: 42.1, 42.2, 42.3_
 
