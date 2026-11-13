@@ -72,13 +72,14 @@ defmodule Autoangel.Application do
           |> with_clock(clock),
           {Autoangel.Feedback,
            state_store: Autoangel.StateStore, base_sensitivity: get_in(config, [:sensitivity])},
+          plugin_children(plugins),
           storage_child(storage, config),
           scrape_child(config),
           {Autoangel.SelfMonitor,
            storage_configured?: storage != :none, plugins: plugins, config: config},
           {Autoangel.Background.Supervisor,
            backend: if(storage == :none, do: nil, else: storage),
-           backend_config: Map.get(config, :storage, %{})},
+           backend_config: backend_config(config)},
           {Autoangel.Checkpointer,
            state_store: Autoangel.StateStore,
            workers_supervisor: Autoangel.Workers,
@@ -205,9 +206,36 @@ defmodule Autoangel.Application do
   defp storage_child(backend, config) do
     {Autoangel.Storage.Supervisor,
      backend: backend,
-     backend_config: Map.get(config, :storage, %{}),
+     backend_config: backend_config(config),
      heartbeat_interval_ms: seconds(config, [:heartbeat_interval], 15),
      self_monitor: Autoangel.SelfMonitor}
+  end
+
+  # Background processes of enabled plugins (a plugin offers them through the
+  # optional `children/1` callback), supervised on their own so a failure never
+  # reaches detection.
+  defp plugin_children(plugins) do
+    specs =
+      Enum.flat_map(plugins, fn %{module: module, config: config} ->
+        Code.ensure_loaded(module)
+        if function_exported?(module, :children, 1), do: module.children(config), else: []
+      end)
+
+    if specs == [],
+      do: nil,
+      else: %{
+        id: :plugin_children,
+        type: :supervisor,
+        start: {Supervisor, :start_link, [specs, [strategy: :one_for_one]]}
+      }
+  end
+
+  # The backend reads its own settings (retention windows, compression age) from
+  # the storage section, so the sections that belong to it are added here.
+  defp backend_config(config) do
+    config
+    |> Map.get(:storage, %{})
+    |> Map.merge(Map.take(config, [:retention, :compression]))
   end
 
   defp scrape_child(config) do

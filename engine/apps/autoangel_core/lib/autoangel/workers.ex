@@ -2,6 +2,8 @@ defmodule Autoangel.Workers do
   @moduledoc "Supervised fixed-size pool of isolated detection workers."
   use Supervisor
 
+  alias Autoangel.Workers.Worker
+
   def start_link(opts \\ []),
     do: Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
 
@@ -18,6 +20,28 @@ defmodule Autoangel.Workers do
       end
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  @doc """
+  Every Series the Workers hold, as `%{key, kind, status}`. A read-only view:
+  nothing in the Workers changes. Returns `[]` when the Workers are not running.
+  """
+  @spec list_series(Supervisor.supervisor()) :: [%{key: term(), kind: atom(), status: atom()}]
+  def list_series(supervisor \\ __MODULE__) do
+    supervisor
+    |> Supervisor.which_children()
+    |> Enum.flat_map(fn
+      {_id, pid, _type, _modules} when is_pid(pid) -> worker_series(pid)
+      _ -> []
+    end)
+  catch
+    :exit, _ -> []
+  end
+
+  defp worker_series(pid) do
+    Worker.listing(pid)
+  catch
+    :exit, _ -> []
   end
 
   def worker(index, supervisor \\ __MODULE__),
@@ -107,6 +131,10 @@ defmodule Autoangel.Workers.Worker do
 
   def series(pid, key), do: GenServer.call(pid, {:series, key})
 
+  @doc "The Series this Worker holds as `%{key, kind, status}`."
+  @spec listing(GenServer.server()) :: [%{key: term(), kind: atom(), status: atom()}]
+  def listing(pid), do: GenServer.call(pid, :listing)
+
   @doc """
   Sets the per-Series sensitivity override used by `Decision` (Requirement 30.2).
   Returns `:error` when this Worker does not hold the Series.
@@ -181,6 +209,14 @@ defmodule Autoangel.Workers.Worker do
   end
 
   def handle_call({:series, key}, _from, state), do: {:reply, Map.get(state.series, key), state}
+
+  def handle_call(:listing, _from, state) do
+    listing =
+      for {key, entry} <- state.series,
+          do: %{key: key, kind: entry.meta.kind, status: entry.meta.status}
+
+    {:reply, listing, state}
+  end
 
   def handle_call({:set_sensitivity, key, value}, _from, state) do
     case Map.fetch(state.series, key) do

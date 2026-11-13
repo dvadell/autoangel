@@ -32,7 +32,8 @@ defmodule AutoangelTsdb do
   defp prepare(conn, config) do
     with :ok <- Migrations.run(conn, Map.get(config, :migration_options, [])),
          {:ok, _policy_results} <- AutoangelTsdb.Retention.apply_policies(conn, config) do
-      :ok
+      # A compression problem never stops the Engine: it logs and stores uncompressed.
+      AutoangelTsdb.Compression.apply_or_continue(conn, config)
     end
   end
 

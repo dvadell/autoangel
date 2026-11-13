@@ -11,6 +11,9 @@ defmodule AutoangelReplay.CapturePlugin do
   def validate_config(_config), do: :ok
 
   @impl true
+  # A resolution closes an Incident the harness already counted at its start.
+  def deliver(%Autoangel.Alert{resolved?: true}, _config), do: :ok
+
   def deliver(%Autoangel.Alert{} = alert, _config) do
     AutoangelReplay.Capture.record(alert)
     :ok

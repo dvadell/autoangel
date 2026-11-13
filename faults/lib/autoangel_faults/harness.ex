@@ -23,29 +23,32 @@ defmodule AutoangelFaults.Harness do
   @doc """
   The shared fixture: three Series of 5-minute Samples over about 2.4 days, with
   seeded noise and a four-Sample spike on two of them after the learning period.
+  The spikes are hours apart, so the Incident grouping window never joins them and
+  each one gives its own alert.
   """
   @spec fixture() :: {[Series.t()], [map()]}
   def fixture do
     :rand.seed(:exsss, 11)
 
     series =
-      for {host, spike?} <- [{"a", true}, {"b", true}, {"c", false}] do
+      for {host, spike_at} <- [{"a", 500}, {"b", 560}, {"c", nil}] do
         samples =
           for i <- 0..700 do
             v = 50.0 + :rand.uniform()
-            {@base + i * @step, if(spike? and i in 500..503, do: v + 400.0, else: v)}
+            spike? = spike_at != nil and i in spike_at..(spike_at + 3)
+            {@base + i * @step, if(spike?, do: v + 400.0, else: v)}
           end
 
         Series.new("fault_metric", %{"host" => host}, samples)
       end
 
     labels =
-      for s <- series, s.labels["host"] != "c" do
+      for {s, at} <- Enum.zip(series, [500, 560, nil]), at != nil do
         %{
           series_key: Series.key(s),
           type: :spike,
-          start_ms: @base + 500 * @step,
-          end_ms: @base + 500 * @step
+          start_ms: @base + at * @step,
+          end_ms: @base + at * @step
         }
       end
 

@@ -806,32 +806,32 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Closest-Incident tie breaks, invalid sensitivity values, restore order
     - _Requirements: 28.1, 31.5, 31.6_
 
-- [ ] 37. Implement remaining P1 Engine features
-  - [~]* 37.1 Implement JSON ad-hoc ingestion at `POST /api/v1/push/json` (P1)
+- [x] 37. Implement remaining P1 Engine features
+  - [x]* 37.1 Implement JSON ad-hoc ingestion at `POST /api/v1/push/json` (P1)
     - Validate one JSON object with name, numeric value, optional integer timestamp and string labels; error bodies `missing_field`, `invalid_field` and `not_a_json_object`; same processing path as pushes
     - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
 
-  - [~]* 37.2 Write property test for JSON ingestion
+  - [x]* 37.2 Write property test for JSON ingestion
     - **Property 4: JSON ingestion validation**
     - **Validates: Requirements 3.1, 3.2, 3.3, 3.4, 3.5**
 
-  - [~]* 37.3 Implement Telegram feedback buttons (P1)
+  - [x]* 37.3 Implement Telegram feedback buttons (P1)
     - `inline_keyboard` "mute" and "this was normal" buttons per alert targeting its Incident; long-poll `getUpdates` and pass callbacks to `Autoangel.Feedback.apply/2`
     - _Requirements: 30.5, 30.9_
 
-  - [~]* 37.4 Implement `GET /api/v1/incidents` and `GET /api/v1/series` (P1)
+  - [x]* 37.4 Implement `GET /api/v1/incidents` and `GET /api/v1/series` (P1)
     - Read-only listings from Engine state, empty lists when nothing is held, Control_API auth
     - _Requirements: 46.1, 46.2, 46.3, 46.4, 46.5_
 
-  - [~]* 37.5 Write property test for listings
+  - [x]* 37.5 Write property test for listings
     - **Property 45: Listings reflect Engine state and change nothing**
     - **Validates: Requirements 46.1, 46.2, 46.3, 46.5**
 
-  - [~]* 37.6 Implement the compression policy (P1)
+  - [x]* 37.6 Implement the compression policy (P1)
     - Ensure exactly one compression policy with the configured age (default 1 d, validated) after migrations, replace on change, log and continue uncompressed on rejection; integration test that compressed reads equal uncompressed reads
     - _Requirements: 40.1, 40.2, 40.3, 40.4, 40.5, 40.6_
 
-- [~] 38. Checkpoint - M5 Smarter complete
+- [x] 38. Checkpoint - M5 Smarter complete
   - Ensure all tests pass, ask the user if questions arise.
 
 ### M6: Polish

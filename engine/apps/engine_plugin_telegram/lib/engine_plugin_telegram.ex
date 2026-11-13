@@ -43,6 +43,14 @@ defmodule EnginePluginTelegram do
 
   def deliver(_alert, _config), do: {:permanent, {:invalid_config, [:bot_token, :chat_id]}}
 
+  @impl true
+  @doc "The button poller, unless `feedback_buttons` is set to false."
+  def children(config) when is_map(config) do
+    if Map.get(config, :feedback_buttons, true) == false,
+      do: [],
+      else: [{EnginePluginTelegram.Poller, config: config}]
+  end
+
   @doc "Classifies a Telegram HTTP status according to the delivery contract."
   @spec classify_status(non_neg_integer()) :: :ok | :retryable | :permanent
   def classify_status(status) when status in 200..299, do: :ok
@@ -101,6 +109,9 @@ defmodule EnginePluginTelegram do
   defp render_alert(alert) when is_map(alert), do: truncate(Render.text(alert))
 
   defp truncate(text), do: String.slice(text, 0, 4096)
+
+  # A resolution carries no buttons: there is nothing left to mute or call normal.
+  defp maybe_add_buttons(body, %{resolved?: true}), do: body
 
   defp maybe_add_buttons(body, alert) do
     incident_id =

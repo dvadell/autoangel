@@ -5,8 +5,9 @@ defmodule Autoangel.HTTP.Control do
   """
 
   import Plug.Conn
-  alias Autoangel.Alert.PluginRunner
+  alias Autoangel.Alert.{Dispatcher, PluginRunner}
   alias Autoangel.{Auth, Boot, Exposition, Metrics}
+  alias Autoangel.HTTP.Listings
 
   @spec init(keyword()) :: keyword()
   def init(opts), do: Auth.init(Keyword.put(opts, :role, :control_api))
@@ -36,6 +37,13 @@ defmodule Autoangel.HTTP.Control do
     |> put_resp_content_type("text/plain; version=0.0.4")
     |> send_resp(200, IO.iodata_to_binary(Exposition.print(metrics)))
   end
+
+  # Read-only listings of what the Engine holds in memory (Requirements 46.1 to 46.5).
+  defp route(%Plug.Conn{method: "GET", request_path: "/api/v1/incidents"} = conn, opts),
+    do: json(conn, 200, %{"incidents" => Listings.incidents(incident_state(opts))})
+
+  defp route(%Plug.Conn{method: "GET", request_path: "/api/v1/series"} = conn, opts),
+    do: json(conn, 200, %{"series" => Listings.series(series_entries(opts))})
 
   defp route(%Plug.Conn{method: "POST", request_path: "/api/v1/feedback"} = conn, opts) do
     if Boot.ready?(),
@@ -101,6 +109,27 @@ defmodule Autoangel.HTTP.Control do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, JSON.encode!(body))
+  end
+
+  # The Incidents the Dispatcher holds, or nothing when it is not running.
+  defp incident_state(opts) do
+    case Keyword.get(opts, :incidents_fun) do
+      fun when is_function(fun, 0) -> fun.()
+      _ -> dispatcher_incidents()
+    end
+  end
+
+  defp dispatcher_incidents do
+    Map.get(Dispatcher.state(), :incidents, %{})
+  catch
+    :exit, _ -> %{}
+  end
+
+  defp series_entries(opts) do
+    case Keyword.get(opts, :series_fun) do
+      fun when is_function(fun, 0) -> fun.()
+      _ -> Autoangel.Workers.list_series()
+    end
   end
 
   defp metrics_families(opts) do

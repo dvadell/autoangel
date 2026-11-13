@@ -27,6 +27,7 @@ defmodule Autoangel.Ingest do
   import Plug.Conn
   alias Autoangel.Exposition
   alias Autoangel.Exposition.Sample
+  alias Autoangel.Ingest.JsonSample
   alias Autoangel.{Ingest.Metrics, SeriesRegistry, Workers}
   @default_max_body_size 10 * 1024 * 1024
 
@@ -58,8 +59,43 @@ defmodule Autoangel.Ingest do
     end
   end
 
+  # One Sample as a JSON object (Requirements 3.1 to 3.5). It takes the same path
+  # as a push: admission, Workers and the Storage_Writer.
+  def call(%Plug.Conn{method: "POST", request_path: "/api/v1/push/json"} = conn, opts) do
+    config = Keyword.get(opts, :config, Application.get_env(:autoangel_core, :config, %{}))
+
+    max_size =
+      Keyword.get(
+        opts,
+        :max_body_size,
+        get_in(config, [:ingest, :max_body_size]) || @default_max_body_size
+      )
+
+    with {:ok, body, conn} <- read_body_limited(conn, max_size),
+         {:ok, sample} <- JsonSample.parse(body),
+         {:ok, result} <- process_samples([sample], opts) do
+      send_json(conn, 202, result)
+    else
+      {:error, :too_large, conn} -> send_resp(conn, 413, "request body too large")
+      {:error, :overloaded} -> send_resp(conn, 503, "engine overloaded")
+      {:error, reason} -> send_error(conn, reason)
+    end
+  end
+
   def call(%Plug.Conn{method: "POST"} = conn, _opts), do: send_resp(conn, 404, "not found")
   def call(conn, _opts), do: send_resp(conn, 404, "not found")
+
+  defp send_error(conn, :not_a_json_object) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(400, ~s({"error":"not_a_json_object"}))
+  end
+
+  defp send_error(conn, {kind, field}) when kind in [:missing_field, :invalid_field] do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(400, ~s({"error":"#{kind}","field":"#{field}"}))
+  end
 
   @spec process_samples([Sample.t()], keyword()) :: {:ok, map()} | {:error, :overloaded}
   def process_samples(samples, opts \\ []) when is_list(samples) do

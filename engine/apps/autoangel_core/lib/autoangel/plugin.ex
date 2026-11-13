@@ -28,4 +28,13 @@ defmodule Autoangel.Plugin do
   `{:permanent, reason}` when retrying cannot succeed.
   """
   @callback deliver(alert :: term(), config :: map()) :: delivery_outcome()
+
+  @doc """
+  Optional background processes the plugin needs while it is enabled (for example
+  a poller for button presses). They are supervised by the Engine, and a failure
+  in one never reaches detection.
+  """
+  @callback children(config :: map()) :: [Supervisor.child_spec() | {module(), term()} | module()]
+
+  @optional_callbacks children: 1
 end
