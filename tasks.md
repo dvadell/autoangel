@@ -845,12 +845,12 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Validation failures and reply classification against fake servers
     - _Requirements: 24.3, 24.4_
 
-- [ ] 40. Implement CLI output measurement
-  - [~]* 40.1 Implement `--measure-output` (P1)
+- [x] 40. Implement CLI output measurement
+  - [x]* 40.1 Implement `--measure-output` (P1)
     - Pipe stdout through unchanged while counting bytes and hashing with SHA-256; push `autoangel_job_output_bytes` and the 48-bit hash with the run timestamp, also on non-zero exit; omit both when disabled
     - _Requirements: 69.1, 69.2, 69.3, 69.4, 69.5, 69.6_
 
-  - [~]* 40.2 Write property test for output size and hash
+  - [x]* 40.2 Write property test for output size and hash
     - **Property 65: Output size and hash**
     - **Validates: Requirements 69.1, 69.2**
 

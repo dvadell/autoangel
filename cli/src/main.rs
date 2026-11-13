@@ -207,6 +207,10 @@ pub struct RunArgs {
     /// Measure CPU time and maximum resident memory with wait4.
     #[arg(long)]
     pub measure_resources: bool,
+    /// Count the bytes the command writes to stdout and hash them with SHA-256.
+    /// The output itself passes through unchanged.
+    #[arg(long)]
+    pub measure_output: bool,
     /// Command and arguments, passed unchanged after `--`.
     #[arg(last = true, required = true, value_parser = clap::value_parser!(OsString))]
     pub command: Vec<OsString>,
@@ -361,6 +365,51 @@ pub struct RunMeasurement {
     pub wall_seconds: f64,
     pub cpu_seconds: Option<f64>,
     pub max_rss_bytes: Option<u64>,
+    pub output: Option<OutputMeasurement>,
+}
+
+/// The size of a command's stdout and the first 48 bits of its SHA-256.
+///
+/// 48 bits fit a Prometheus sample value without rounding (a float holds 53).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputMeasurement {
+    pub bytes: u64,
+    pub hash48: u64,
+}
+
+/// Copy `reader` to `writer` unchanged while counting the bytes and hashing them.
+///
+/// A write error (a closed pipe, say) stops the copying but not the counting:
+/// the command keeps running and the measurement covers everything it wrote.
+pub fn measure_stream<R: std::io::Read, W: std::io::Write>(
+    mut reader: R,
+    mut writer: W,
+) -> OutputMeasurement {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    let mut writable = true;
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        let chunk = &buffer[..read];
+        hasher.update(chunk);
+        bytes += read as u64;
+        if writable && (writer.write_all(chunk).is_err() || writer.flush().is_err()) {
+            writable = false;
+        }
+    }
+    let digest = hasher.finalize();
+    let hash48 = digest[..6]
+        .iter()
+        .fold(0u64, |acc, byte| (acc << 8) | u64::from(*byte));
+    OutputMeasurement { bytes, hash48 }
 }
 
 fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
@@ -373,13 +422,21 @@ fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    let child = ProcessCommand::new(program)
+    let mut child = ProcessCommand::new(program)
         .args(&args.command[1..])
         .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
+        .stdout(if args.measure_output {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("could not start `{}`: {error}", program.to_string_lossy()))?;
+    let output_reader = child
+        .stdout
+        .take()
+        .map(|stdout| std::thread::spawn(move || measure_stream(stdout, std::io::stdout().lock())));
 
     #[cfg(unix)]
     let (exit_code, cpu_seconds, max_rss_bytes) = wait_for_child(child, args.measure_resources)?;
@@ -395,12 +452,16 @@ fn run_command(args: &RunArgs) -> Result<RunMeasurement, String> {
         (status.code().unwrap_or(1), None, None)
     };
 
+    // The command has ended; its output is complete once the pipe reaches EOF.
+    let output = output_reader.and_then(|reader| reader.join().ok());
+
     Ok(RunMeasurement {
         start_timestamp_ms,
         exit_code,
         wall_seconds: start.elapsed().as_secs_f64(),
         cpu_seconds,
         max_rss_bytes,
+        output,
     })
 }
 
@@ -460,6 +521,7 @@ pub struct RunMetrics {
     pub exit_code: i32,
     pub cpu_seconds: Option<f64>,
     pub max_rss_bytes: Option<u64>,
+    pub output: Option<OutputMeasurement>,
 }
 
 impl RunMetrics {
@@ -475,6 +537,7 @@ impl RunMetrics {
             exit_code: measurement.exit_code,
             cpu_seconds: measurement.cpu_seconds,
             max_rss_bytes: measurement.max_rss_bytes,
+            output: measurement.output,
         }
     }
 }
@@ -527,6 +590,10 @@ pub fn build_run_body(metrics: &RunMetrics, include_timestamp: bool) -> String {
     }
     if let Some(value) = metrics.max_rss_bytes {
         add("autoangel_job_max_rss_bytes", value as f64);
+    }
+    if let Some(output) = metrics.output {
+        add("autoangel_job_output_bytes", output.bytes as f64);
+        add("autoangel_job_output_hash", output.hash48 as f64);
     }
     output
 }
@@ -779,6 +846,7 @@ mod tests {
             exit_code: 0,
             cpu_seconds: Some(2.5),
             max_rss_bytes: Some(4096),
+            output: None,
         };
         let body = build_run_body(&metrics, true);
         assert_eq!(body.matches(" 1793520000000\n").count(), 5);
@@ -805,6 +873,7 @@ mod tests {
             exit_code: 0,
             cpu_seconds: None,
             max_rss_bytes: None,
+            output: None,
         };
         write_textfile(&path, &metrics).unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
@@ -824,6 +893,7 @@ mod tests {
             exit_code: 0,
             cpu_seconds: None,
             max_rss_bytes: None,
+            output: None,
         };
         write_textfile(&path, &metrics).unwrap();
         assert!(path.exists());
@@ -840,6 +910,7 @@ mod tests {
             exit_code: 0,
             cpu_seconds: None,
             max_rss_bytes: None,
+            output: None,
         };
         assert!(write_textfile(path, &metrics).is_err());
     }
@@ -883,6 +954,7 @@ mod tests {
             name: "job".to_owned(),
             textfile_path: None,
             measure_resources: true,
+            measure_output: false,
             command: vec!["sh".into(), "-c".into(), "exit 7".into()],
         };
         let measurement = run_command(&args).expect("command should run");
@@ -907,6 +979,7 @@ mod tests {
             name: "job".to_owned(),
             textfile_path: None,
             measure_resources: false,
+            measure_output: false,
             command: vec!["sh".into(), "-c".into(), "kill -TERM $$".into()],
         };
         assert_eq!(
@@ -929,6 +1002,7 @@ mod tests {
             name: "job".to_owned(),
             textfile_path: None,
             measure_resources: false,
+            measure_output: false,
             command: vec!["definitely-not-a-real-command".into()],
         };
         let error = run_command(&args).expect_err("missing command should fail");
@@ -952,6 +1026,7 @@ mod tests {
             exit_code: 0,
             cpu_seconds: None,
             max_rss_bytes: None,
+            output: None,
         };
         write_textfile(&path, &metrics).unwrap();
 
@@ -1011,6 +1086,7 @@ mod transparency_property_tests {
             name: "job".to_owned(),
             textfile_path: None,
             measure_resources,
+            measure_output: false,
             command,
         }
     }
@@ -1252,6 +1328,7 @@ mod push_body_property_tests {
             exit_code: 3,
             cpu_seconds,
             max_rss_bytes,
+            output: None,
         }
     }
 
@@ -1749,6 +1826,7 @@ mod retry_property_tests {
             exit_code: 0,
             cpu_seconds: None,
             max_rss_bytes: None,
+            output: None,
         }
     }
 
@@ -1808,5 +1886,140 @@ mod retry_property_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod output_measurement_property_tests {
+    //! Property 65: the size and hash of the output (Requirements 69.1 and 69.2).
+    use super::*;
+    use proptest::prelude::*;
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+
+    /// A reader that returns the data in the given chunk sizes.
+    struct Chunked<'a> {
+        data: &'a [u8],
+        sizes: Vec<usize>,
+        next: usize,
+    }
+
+    impl Read for Chunked<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let size = self.sizes[self.next % self.sizes.len()].max(1);
+            self.next += 1;
+            let count = size.min(buffer.len()).min(self.data.len());
+            buffer[..count].copy_from_slice(&self.data[..count]);
+            self.data = &self.data[count..];
+            Ok(count)
+        }
+    }
+
+    /// A writer that refuses everything, like a closed pipe.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn reference_hash48(data: &[u8]) -> u64 {
+        let digest = Sha256::digest(data);
+        u64::from_be_bytes([
+            0, 0, digest[0], digest[1], digest[2], digest[3], digest[4], digest[5],
+        ])
+    }
+
+    proptest! {
+        // Feature: v1, Property 65: Output size and hash
+        #[test]
+        fn size_and_hash_describe_exactly_the_bytes_written(
+            data in proptest::collection::vec(any::<u8>(), 0..200_000),
+            sizes in proptest::collection::vec(1usize..100_000, 1..8),
+        ) {
+            let reader = Chunked { data: &data, sizes, next: 0 };
+            let mut written = Vec::new();
+            let measurement = measure_stream(reader, &mut written);
+
+            // The output is passed through byte for byte.
+            prop_assert_eq!(&written, &data);
+            prop_assert_eq!(measurement.bytes, data.len() as u64);
+            prop_assert_eq!(measurement.hash48, reference_hash48(&data));
+            // The hash is 48 bits, so a float holds it exactly.
+            prop_assert!(measurement.hash48 < (1u64 << 48));
+            prop_assert_eq!(measurement.hash48 as f64 as u64, measurement.hash48);
+        }
+
+        #[test]
+        fn a_closed_output_does_not_change_the_measurement(
+            data in proptest::collection::vec(any::<u8>(), 0..50_000),
+        ) {
+            let measurement = measure_stream(&data[..], Closed);
+            prop_assert_eq!(measurement.bytes, data.len() as u64);
+            prop_assert_eq!(measurement.hash48, reference_hash48(&data));
+        }
+
+        #[test]
+        fn different_output_gives_a_different_hash(
+            data in proptest::collection::vec(any::<u8>(), 1..2_000),
+            flip in 0usize..2_000,
+        ) {
+            let mut changed = data.clone();
+            let index = flip % changed.len();
+            changed[index] ^= 0x01;
+            let a = measure_stream(&data[..], std::io::sink());
+            let b = measure_stream(&changed[..], std::io::sink());
+            prop_assert_eq!(a.bytes, b.bytes);
+            prop_assert_ne!(a.hash48, b.hash48);
+        }
+    }
+
+    #[test]
+    fn empty_output_is_zero_bytes_and_the_hash_of_nothing() {
+        let measurement = measure_stream(std::io::empty(), std::io::sink());
+        assert_eq!(measurement.bytes, 0);
+        // SHA-256 of nothing starts e3b0c44298fc.
+        assert_eq!(measurement.hash48, 0xe3b0_c442_98fc);
+    }
+
+    #[test]
+    fn a_known_input_has_the_known_hash() {
+        // SHA-256("abc") starts ba7816bf8f01.
+        let measurement = measure_stream(&b"abc"[..], std::io::sink());
+        assert_eq!(measurement.bytes, 3);
+        assert_eq!(measurement.hash48, 0xba78_16bf_8f01);
+    }
+
+    #[test]
+    fn the_metrics_body_has_both_values_only_when_measured() {
+        let measured = RunMetrics {
+            name: "job".into(),
+            timestamp_ms: 5,
+            duration_seconds: 1.0,
+            exit_code: 3,
+            cpu_seconds: None,
+            max_rss_bytes: None,
+            output: Some(OutputMeasurement {
+                bytes: 12,
+                hash48: 0xba78_16bf_8f01,
+            }),
+        };
+        let body = build_run_body(&measured, true);
+        assert!(body.contains("autoangel_job_output_bytes{job=\"job\"} 12 5\n"));
+        assert!(body.contains(&format!(
+            "autoangel_job_output_hash{{job=\"job\"}} {} 5\n",
+            0xba78_16bf_8f01u64
+        )));
+
+        let unmeasured = RunMetrics {
+            output: None,
+            ..measured
+        };
+        let body = build_run_body(&unmeasured, true);
+        assert!(!body.contains("autoangel_job_output"));
     }
 }
