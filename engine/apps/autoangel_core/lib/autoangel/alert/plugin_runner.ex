@@ -24,7 +24,6 @@ defmodule Autoangel.Alert.PluginRunner do
             breaker: :closed,
             consecutive_failures: 0,
             reporter: nil,
-            reporter: nil,
             failures: [],
             metrics: %{success: 0, retryable: 0, permanent: 0, timeout: 0, skipped: 0, dropped: 0}
 

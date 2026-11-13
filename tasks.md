@@ -836,12 +836,12 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
 
 ### M6: Polish
 
-- [ ] 39. Implement additional plugins
-  - [~]* 39.1 Implement webhook, ntfy, Slack and Discord plugin apps (P1)
+- [x] 39. Implement additional plugins
+  - [x]* 39.1 Implement webhook, ntfy, Slack and Discord plugin apps (P1)
     - One Mix app each depending on `autoangel_core`, implementing every Plugin_Behaviour callback, validating destination fields and classifying failures as retryable or permanent
     - _Requirements: 24.1, 24.2, 24.3, 24.4_
 
-  - [~]* 39.2 Write unit tests for the additional plugins
+  - [x]* 39.2 Write unit tests for the additional plugins
     - Validation failures and reply classification against fake servers
     - _Requirements: 24.3, 24.4_
 
