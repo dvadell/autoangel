@@ -5,6 +5,7 @@ defmodule Autoangel.Config do
 
   require Logger
 
+  alias Autoangel.Detect.Seasonality
   alias Autoangel.Secret
 
   @defaults %{
@@ -18,6 +19,11 @@ defmodule Autoangel.Config do
     heartbeat_interval: 15,
     ingest_rate_limit: %{rate: 50, burst: 200},
     storage: %{backend: :none, password: nil},
+    seasonality: %{threshold: 0.3},
+    level_shift: %{min_samples: 10},
+    drift: %{threshold: 3.0, window: 4_096},
+    sensitivity: 1.0,
+    series_overrides: [],
     scrape_targets: [],
     ingest: %{token: nil, username: nil, password: nil},
     control_api: %{token: nil, username: nil, password: nil},
@@ -327,6 +333,13 @@ defmodule Autoangel.Config do
       {:heartbeat_interval, config[:heartbeat_interval], &positive_number?/1},
       {:ingest_rate, rate[:rate], &positive_number?/1},
       {:ingest_burst, rate[:burst], &positive_integer?/1},
+      {:seasonality_threshold, section(config, :seasonality)[:threshold],
+       &Seasonality.valid_threshold?/1},
+      {:level_shift_min_samples, section(config, :level_shift)[:min_samples], &positive_integer?/1},
+      {:drift_threshold, section(config, :drift)[:threshold], &positive_number?/1},
+      {:drift_window, section(config, :drift)[:window], &(positive_integer?(&1) and &1 <= 65_535)},
+      {:sensitivity, config[:sensitivity], &valid_sensitivity?/1},
+      {:series_overrides, config[:series_overrides], &valid_series_overrides?/1},
       {:storage_backend, storage[:backend], &valid_backend?/1},
       {:storage_backend_selection, config, &storage_selection_valid?/1},
       {:storage_password, storage[:password], &valid_secret?/1},
@@ -349,6 +362,23 @@ defmodule Autoangel.Config do
   defp plugin_validation_errors({:error, errors}) when is_list(errors), do: errors
 
   defp section(config, key), do: if(is_map(config[key]), do: config[key], else: %{})
+
+  defp valid_sensitivity?(value),
+    do: is_number(value) and value >= 0.25 and value <= 4.0
+
+  defp valid_series_overrides?(list) when is_list(list) do
+    Enum.all?(list, fn
+      %{name: name} = entry when is_binary(name) and name != "" ->
+        Enum.all?(Map.keys(entry), &(&1 in [:name, :sensitivity, :direction])) and
+          valid_sensitivity?(Map.get(entry, :sensitivity, 1.0)) and
+          Map.get(entry, :direction, "both") in ["high", "low", "both", :high, :low, :both]
+
+      _ ->
+        false
+    end)
+  end
+
+  defp valid_series_overrides?(_), do: false
 
   defp valid_backend?(value), do: value in [:none, :timescaledb, "none", "timescaledb"]
 

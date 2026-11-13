@@ -26,7 +26,11 @@ defmodule Autoangel.Storage do
   @doc "Deletes Heartbeat rows older than `before_ms`."
   @callback prune_heartbeats(handle(), before_ms :: integer()) :: outcome()
 
-  @optional_callbacks write_heartbeat: 3, prune_heartbeats: 2
+  @doc "Anomaly starts `{series_key, start_ms}` in `[from_ms, to_ms)`, for seeding the Correlator."
+  @callback read_anomaly_events(handle(), from_ms :: integer(), to_ms :: integer()) ::
+              {:ok, [{term(), integer()}]} | {:retryable, term()} | {:permanent, term()}
+
+  @optional_callbacks write_heartbeat: 3, prune_heartbeats: 2, read_anomaly_events: 3
 
   @callbacks [
     {:init, 1},

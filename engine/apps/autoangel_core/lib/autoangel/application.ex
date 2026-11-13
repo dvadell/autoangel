@@ -48,6 +48,8 @@ defmodule Autoangel.Application do
              decision_cfg: decision_cfg(config),
              sweep_interval: seconds(config, [:missing_data, :sweep_interval], 15),
              scrape_status_table: :autoangel_scrape_status,
+             history: storage != :none,
+             seasonality_threshold: get_in(config, [:seasonality, :threshold]) || 0.3,
              queue_capacity: 20_000,
              max_batch: 2,
              dispatcher: Autoangel.Alert.Dispatcher,
@@ -72,7 +74,9 @@ defmodule Autoangel.Application do
           scrape_child(config),
           {Autoangel.SelfMonitor,
            storage_configured?: storage != :none, plugins: plugins, config: config},
-          {Autoangel.Background.Supervisor, []},
+          {Autoangel.Background.Supervisor,
+           backend: if(storage == :none, do: nil, else: storage),
+           backend_config: Map.get(config, :storage, %{})},
           {Autoangel.Checkpointer,
            state_store: Autoangel.StateStore,
            workers_supervisor: Autoangel.Workers,
@@ -102,6 +106,10 @@ defmodule Autoangel.Application do
     |> case do
       {:ok, _pid} = result ->
         Autoangel.Boot.ready()
+
+        if storage != :none,
+          do: Autoangel.History.seed_pairs(window_ms: seconds(config, [:correlation, :window], 600))
+
         result
 
       error ->

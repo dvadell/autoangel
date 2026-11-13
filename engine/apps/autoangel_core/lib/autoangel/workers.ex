@@ -35,7 +35,12 @@ defmodule Autoangel.Workers.Worker do
   require Logger
   alias Autoangel.{Alert.Dispatcher, Detect.Decision, Kernel, Kernel.Params, Kernel.State}
   alias Autoangel.Exposition.Sample
+  alias Autoangel.History
   alias Autoangel.Storage.{Rows, Writer}
+  alias Autoangel.Workers.HistoryOps
+
+  @seasonality_interval_ms 6 * 3_600_000
+  @warm_timeout_ms 500
 
   defstruct index: 0,
             series: %{},
@@ -53,7 +58,12 @@ defmodule Autoangel.Workers.Worker do
             decision_cfg: %{},
             dispatcher: Dispatcher,
             correlator: Autoangel.Correlate,
-            storage_writer: nil
+            storage_writer: nil,
+            history?: false,
+            seasonality_interval: @seasonality_interval_ms,
+            seasonality_threshold: 0.3,
+            warm_timeout: @warm_timeout_ms,
+            quiet?: false
 
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name))
@@ -127,11 +137,16 @@ defmodule Autoangel.Workers.Worker do
       decision_cfg: Keyword.get(opts, :decision_cfg, %{}),
       dispatcher: Keyword.get(opts, :dispatcher, Dispatcher),
       correlator: Keyword.get(opts, :correlator, Autoangel.Correlate),
-      storage_writer: Keyword.get(opts, :storage_writer)
+      storage_writer: Keyword.get(opts, :storage_writer),
+      history?: Keyword.get(opts, :history, false),
+      seasonality_interval: Keyword.get(opts, :seasonality_interval, @seasonality_interval_ms),
+      seasonality_threshold: Keyword.get(opts, :seasonality_threshold, 0.3),
+      warm_timeout: Keyword.get(opts, :warm_timeout, @warm_timeout_ms)
     }
 
     :persistent_term.put({__MODULE__, state.index}, state.queue_counter)
     :persistent_term.put({__MODULE__, :capacity, state.index}, state.queue_capacity)
+    if state.history?, do: Process.send_after(self(), :seasonality, state.seasonality_interval)
     {:ok, restore_entries(schedule_sweep(state))}
   end
 
@@ -215,6 +230,23 @@ defmodule Autoangel.Workers.Worker do
   def handle_cast(_message, state), do: {:noreply, state}
 
   @impl GenServer
+  # Every 6 hours: analyse seasonality in the background, never in this process.
+  def handle_info(:seasonality, state) do
+    Process.send_after(self(), :seasonality, state.seasonality_interval)
+    {:noreply, start_seasonality(state)}
+  end
+
+  def handle_info({:history_result, "seasonality", _keys, {:ok, decisions}}, state),
+    do: {:noreply, apply_seasonality(state, decisions)}
+
+  # A failed read keeps every Baseline as it is (the Task already logged it).
+  def handle_info({:history_result, "seasonality", _keys, _failed}, state), do: {:noreply, state}
+
+  def handle_info({:history_result, "warm start", [key], result}, state),
+    do: {:noreply, finish_warm(state, key, result)}
+
+  def handle_info({:warm_timeout, key}, state), do: {:noreply, finish_warm(state, key, :timeout)}
+
   def handle_info(:sweep, state) do
     now = state.now.()
 
@@ -311,21 +343,149 @@ defmodule Autoangel.Workers.Worker do
     _ -> {:error, :bad_metadata}
   end
 
-  defp process_pending(state) do
-    {series, _} =
-      Enum.reduce(state.pending, {state.series, []}, fn {key, samples}, {all, _} ->
-        samples = samples |> Enum.sort_by(&timestamp/1) |> Enum.chunk_every(state.max_batch)
+  defp process_pending(state), do: process_keys(%{state | pending: %{}}, state.pending)
 
-        current =
-          all
-          |> Map.get_lazy(key, fn -> new_series(key, hd(samples) |> hd(), state) end)
-          |> ensure_stored(state)
+  defp process_keys(state, pending) do
+    Enum.reduce(pending, state, fn {key, samples}, acc ->
+      case Map.get(acc.series, key) do
+        %{meta: %{warming?: true}} = entry ->
+          buffered = Map.update(entry, :warm_buffer, samples, &(samples ++ &1))
+          %{acc | series: Map.put(acc.series, key, buffered)}
 
-        updated = Enum.reduce(samples, current, &score_chunk(&2, &1, state))
-        {Map.put(all, key, updated), []}
+        nil when acc.history? ->
+          start_warm(acc, key, samples)
+
+        existing ->
+          score_samples(acc, key, existing, samples)
+      end
+    end)
+  end
+
+  defp score_samples(state, key, existing, samples) do
+    chunks = samples |> Enum.sort_by(&timestamp/1) |> Enum.chunk_every(state.max_batch)
+
+    current =
+      (existing || new_series(key, hd(chunks) |> hd(), state))
+      |> ensure_stored(state)
+
+    updated = Enum.reduce(chunks, current, &score_chunk(&2, &1, state))
+    %{state | series: Map.put(state.series, key, updated)}
+  end
+
+  # --- warm start (Requirements 44.1 to 44.5) -------------------------------------
+
+  # A new Series without a checkpoint is warming: live Samples are buffered while
+  # stored history is read in the background with a short timeout.
+  defp start_warm(state, key, samples) do
+    entry = new_series(key, samples |> Enum.sort_by(&timestamp/1) |> hd(), state)
+    entry = %{entry | meta: %{entry.meta | warming?: true}} |> Map.put(:warm_buffer, samples)
+    {range, _} = History.defaults()
+    now = state.now.()
+    id = Autoangel.SeriesRegistry.series_id(key)
+
+    History.async(
+      "warm start",
+      [key],
+      fn -> History.read([id], now - range, now) end,
+      reply_to: self()
+    )
+
+    Process.send_after(self(), {:warm_timeout, key}, state.warm_timeout)
+    %{state | series: Map.put(state.series, key, entry)}
+  end
+
+  defp finish_warm(state, key, result) do
+    case Map.get(state.series, key) do
+      %{meta: %{warming?: true}} = entry ->
+        stored =
+          case result do
+            {:ok, rows} -> HistoryOps.stored_samples(rows, Autoangel.SeriesRegistry.series_id(key))
+            _failed_or_timeout -> []
+          end
+
+        {stored_only, buffer} =
+          HistoryOps.plan(stored, Map.get(entry, :warm_buffer, []), &timestamp/1)
+
+        entry = Map.delete(entry, :warm_buffer)
+        entry = fold_stored(entry, stored_only, state)
+        entry = %{entry | meta: %{entry.meta | warming?: false}}
+        state = %{state | series: Map.put(state.series, key, entry)}
+        state = store_warm_status(state, key, entry)
+        score_samples(state, key, state.series[key], buffer)
+
+      _already_finished ->
+        state
+    end
+  end
+
+  # Stored Samples teach the Baseline but raise nothing: events are dropped, and
+  # no run or open Anomaly carries over from history into live detection.
+  defp fold_stored(entry, [], _state), do: entry
+
+  defp fold_stored(entry, stored, state) do
+    quiet = %{state | dispatcher: nil, correlator: nil, storage_writer: nil, quiet?: true}
+
+    samples =
+      Enum.map(stored, fn {ts, value} -> %{timestamp: ts, received_at: ts, value: value} end)
+
+    folded =
+      samples
+      |> Enum.chunk_every(state.max_batch)
+      |> Enum.reduce(entry, &score_chunk(&2, &1, quiet))
+
+    meta = %{
+      folded.meta
+      | run: nil,
+        calm_run: nil,
+        open_value_anomaly: nil,
+        open_missing: nil,
+        status: if(folded.meta.status == :learning, do: :learning, else: :healthy)
+    }
+
+    %{folded | meta: meta}
+  end
+
+  defp store_warm_status(state, key, entry) do
+    if entry.meta.status != :learning,
+      do: store(state, :series, Rows.series(key, entry.meta.kind, entry.meta.status))
+
+    state
+  end
+
+  # --- seasonality (Requirements 12.1 to 12.7) --------------------------------------
+
+  defp start_seasonality(state) do
+    ids_to_keys =
+      state.series
+      |> Enum.reject(fn {_key, entry} -> entry.meta.warming? end)
+      |> Enum.take(elem(History.defaults(), 1))
+      |> Map.new(fn {key, _} -> {Autoangel.SeriesRegistry.series_id(key), key} end)
+
+    if map_size(ids_to_keys) > 0 do
+      now = state.now.()
+      threshold = state.seasonality_threshold
+
+      History.async(
+        "seasonality",
+        Map.values(ids_to_keys),
+        fn -> HistoryOps.analyse_seasonality(ids_to_keys, now, threshold: threshold) end,
+        reply_to: self()
+      )
+    end
+
+    state
+  end
+
+  defp apply_seasonality(state, decisions) do
+    series =
+      Enum.reduce(decisions, state.series, fn {key, decision}, acc ->
+        case Map.get(acc, key) do
+          nil -> acc
+          entry -> Map.put(acc, key, HistoryOps.apply_decision(entry, decision))
+        end
       end)
 
-    %{state | series: series, pending: %{}}
+    %{state | series: series}
   end
 
   defp score_chunk(series, samples, state) do
@@ -340,11 +500,7 @@ defmodule Autoangel.Workers.Worker do
 
     case result do
       {:ok, kernel_state, results} ->
-        Enum.each(samples, fn sample ->
-          accepted = receive_time(sample, state)
-          latency = max(System.system_time(:millisecond) - accepted, 0) / 1_000
-          Autoangel.Metrics.observe(:detection_latency_seconds, latency)
-        end)
+        observe_latency(samples, state)
 
         meta =
           results
@@ -370,6 +526,17 @@ defmodule Autoangel.Workers.Worker do
           %{series | kernel_state: State.encode(State.new(kind: series.kind))}
         end
     end
+  end
+
+  # Samples folded from stored history are not live traffic: no latency to record.
+  defp observe_latency(_samples, %{quiet?: true}), do: :ok
+
+  defp observe_latency(samples, state) do
+    Enum.each(samples, fn sample ->
+      accepted = receive_time(sample, state)
+      latency = max(System.system_time(:millisecond) - accepted, 0) / 1_000
+      Autoangel.Metrics.observe(:detection_latency_seconds, latency)
+    end)
   end
 
   defp score_kernel(series, tuples, params) do

@@ -58,5 +58,13 @@ defmodule Autoangel.Background.Supervisor do
     do: Supervisor.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
 
   @impl true
-  def init(_opts), do: Supervisor.init([], strategy: :one_for_one)
+  def init(opts) do
+    children = [
+      {Task.Supervisor, name: Autoangel.Background.Tasks},
+      {Autoangel.History.Server,
+       backend: Keyword.get(opts, :backend), backend_config: Keyword.get(opts, :backend_config, %{})}
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
 end

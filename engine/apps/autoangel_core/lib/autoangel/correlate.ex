@@ -96,6 +96,15 @@ defmodule Autoangel.Correlate do
   def start_link(opts \\ []),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
 
+  @doc "Adds stored co-occurrence counts (`{{min_key, max_key}, count}`) to the pair table."
+  @spec seed_pairs(GenServer.server(), [{{term(), term()}, pos_integer()}]) :: :ok
+  def seed_pairs(server \\ __MODULE__, pairs) when is_list(pairs),
+    do: GenServer.cast(server, {:seed_pairs, pairs})
+
+  @doc "The pair co-occurrence table as `{{min_key, max_key}, count}` (diagnostics and tests)."
+  @spec pairs(GenServer.server()) :: [{{term(), term()}, pos_integer()}]
+  def pairs(server \\ __MODULE__), do: GenServer.call(server, :pairs)
+
   @doc """
   Handle an Anomaly start asynchronously (hot path): index it, compute the
   Candidate list, forward to the Dispatcher and Storage_Writer.
@@ -151,6 +160,11 @@ defmodule Autoangel.Correlate do
   end
 
   @impl true
+  def handle_cast({:seed_pairs, pairs}, state) do
+    Enum.each(pairs, fn {{a, b}, count} -> seed_pair(state, a, b, count) end)
+    {:noreply, state}
+  end
+
   def handle_cast({:anomaly_started, anomaly}, state) do
     {_candidates, state} = process(anomaly, state)
     {:noreply, state}
@@ -162,6 +176,9 @@ defmodule Autoangel.Correlate do
   end
 
   @impl true
+  def handle_call(:pairs, _from, state),
+    do: {:reply, for({key, {count, _tick}} <- :ets.tab2list(state.pairs), do: {key, count}), state}
+
   def handle_call({:correlate, anomaly}, _from, state) do
     {candidates, state} = process(anomaly, state)
     {:reply, candidates, state}
@@ -370,6 +387,20 @@ defmodule Autoangel.Correlate do
   end
 
   # --- pair co-occurrence table (LRU) ---------------------------------------
+
+  # Adds `count` co-occurrences from stored history without disturbing newer pairs.
+  defp seed_pair(state, a, b, count) do
+    key = pair_key(a, b)
+
+    case :ets.lookup(state.pairs, key) do
+      [{^key, {old, tick}}] ->
+        :ets.insert(state.pairs, {key, {old + count, tick}})
+
+      [] ->
+        :ets.insert(state.pairs, {key, {count, 0}})
+        evict_if_over_cap(state)
+    end
+  end
 
   defp pair_count(state, a, b) do
     case :ets.lookup(state.pairs, pair_key(a, b)) do

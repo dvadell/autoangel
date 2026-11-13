@@ -75,13 +75,16 @@ defmodule Autoangel.Kernel.Scoring do
                spacing_head: next_head(state.spacing_head, spacing)
            }, base_result}
         else
-          result = score_value(observed, base_result, state.window, params)
+          result =
+            score_value(observed, base_result, state.window, seasonal_cell(state, ts), params)
+
           window = push_window(state.window, observed, params.window_size)
 
           {%{
              state
              | kind: kind,
                window: window,
+               seasonal: update_seasonal(state.seasonal, ts, observed),
                head: 0,
                capacity: params.window_size,
                prev: latest_prev(previous, {ts, value}),
@@ -128,15 +131,25 @@ defmodule Autoangel.Kernel.Scoring do
 
     defp observed_value({_ts, value}, _previous, :gauge), do: {value, true}
 
-    defp score_value(nil, result, _window, _params), do: result
+    defp score_value(nil, result, _window, _cell, _params), do: result
 
-    defp score_value(value, result, [], _params) do
+    defp score_value(value, result, [], nil, _params) do
       %{result | score: 0.0, observed: value, lower: value, upper: value, baseline_type: :robust}
     end
 
-    defp score_value(value, result, window, params) do
-      med = median(window)
-      mad = median(Enum.map(window, &safe_abs_diff(&1, med)))
+    defp score_value(value, result, window, cell, params) do
+      window_med = if window == [], do: 0.0, else: median(window)
+
+      window_mad =
+        if window == [], do: 0.0, else: median(Enum.map(window, &safe_abs_diff(&1, window_med)))
+
+      # A per-phase Baseline replaces the rolling median; its spread is never
+      # narrower than the recent raw spread (cells hold hourly means).
+      {med, mad, baseline_type} =
+        case cell do
+          nil -> {window_med, window_mad, :robust}
+          {cell, type} -> {cell.med, max(window_mad, cell.mad), type}
+        end
 
       scale =
         max(
@@ -158,9 +171,47 @@ defmodule Autoangel.Kernel.Scoring do
           observed: value,
           lower: min(lower, upper),
           upper: max(lower, upper),
-          baseline_type: :robust
+          baseline_type: baseline_type
       }
     end
+
+    # --- per-phase seasonal Baseline -------------------------------------------
+
+    @min_cell_samples 2
+
+    defp seasonal_cell(%State{seasonal: nil}, _ts), do: nil
+
+    defp seasonal_cell(%State{seasonal: %{period: period, cells: cells}}, ts) do
+      cell = Enum.at(cells, phase(ts, period))
+
+      if cell && cell.n >= @min_cell_samples,
+        do: {cell, if(period == 24, do: :seasonal_daily, else: :seasonal_weekly)},
+        else: nil
+    end
+
+    defp update_seasonal(nil, _ts, _value), do: nil
+    defp update_seasonal(seasonal, _ts, nil), do: seasonal
+
+    defp update_seasonal(%{period: period, cells: cells} = seasonal, ts, value) do
+      index = phase(ts, period)
+
+      cells =
+        List.update_at(cells, index, fn cell ->
+          alpha = 1.0 / min(cell.n + 1, 24)
+
+          %{
+            med: cell.med + alpha * (value - cell.med),
+            mad: cell.mad + alpha * (abs(value - cell.med) - cell.mad),
+            n: min(cell.n + 1, 4_294_967_295)
+          }
+        end)
+
+      %{seasonal | cells: cells}
+    end
+
+    @doc false
+    @spec phase(integer(), 24 | 168) :: non_neg_integer()
+    def phase(ts_ms, period), do: Integer.mod(Integer.floor_div(ts_ms, 3_600_000), period)
 
     defp threshold_z(threshold) when threshold <= 0, do: 0.0
     defp threshold_z(threshold) when threshold >= 100, do: @max_float

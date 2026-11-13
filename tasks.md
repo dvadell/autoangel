@@ -723,36 +723,36 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Tool list with write tools on and off, `give_feedback` against a fake Control_API per response class, stdio forwarder with the endpoint down, credential rotation after restart
     - _Requirements: 59.4, 62.4, 62.5, 63.1, 63.3, 64.4_
 
-- [~] 32. Checkpoint - M4 Console MCP complete
+- [x] 32. Checkpoint - M4 Console MCP complete
   - Ensure all tests pass, ask the user if questions arise.
 
 ### M5: Smarter (P1)
 
-- [ ] 33. Implement history reads and seasonality detection
-  - [~]* 33.1 Implement `Autoangel.History.read/4` and background analysis tasks (P1)
+- [x] 33. Implement history reads and seasonality detection
+  - [x]* 33.1 Implement `Autoangel.History.read/4` and background analysis tasks (P1)
     - Clamp range (default 15 d) and Series count (default 200) before calling the backend; run reads as `Task`s under `Autoangel.Background.Supervisor`, never in Workers; log warnings naming Series and analysis on failure; issue no reads in Topology_A
     - Seed the pair co-occurrence table from stored anomalies at startup (deep correlation)
     - _Requirements: 37.1, 37.2, 37.3, 37.4, 37.5, 37.6_
 
-  - [~]* 33.2 Write property test for history read bounds
+  - [x]* 33.2 Write property test for history read bounds
     - **Property 41: History reads stay within bounds**
     - **Validates: Requirements 37.3**
 
-  - [~]* 33.3 Implement seasonality detection and per-phase Baselines (P1)
+  - [x]* 33.3 Implement seasonality detection and per-phase Baselines (P1)
     - Every 6 h, test daily and weekly periods with at least 2 cycles of history using ACF ≥ 0.3 on 1-hour means; install 24 or 168 phase cells seeded from aggregates; score with Baseline_Type per-phase seasonal and the period; fall back to robust when no period is significant; keep the Baseline on read failure; end learning by seasonal cycles
     - Validate the significance threshold setting
     - _Requirements: 10.3, 12.1, 12.2, 12.3, 12.4, 12.5, 12.6, 12.7, 35.2_
 
-  - [~]* 33.4 Write unit tests for seasonality classification
+  - [x]* 33.4 Write unit tests for seasonality classification
     - Pure daily sine, weekly pattern, noise only, insufficient history
     - _Requirements: 12.2, 12.5, 12.6_
 
-- [ ] 34. Implement warm start from history
-  - [~]* 34.1 Implement the warming flow in the Worker (P1)
+- [x] 34. Implement warm start from history
+  - [x]* 34.1 Implement the warming flow in the Worker (P1)
     - Mark new Series without checkpoint as warming, buffer live Samples, read history with a 500 ms timeout, fold stored Samples de-duplicated against the buffer, evaluate learning with the earliest stored timestamp, apply the buffer, raise no alerts for stored Samples; start fresh on failure or timeout
     - _Requirements: 44.1, 44.2, 44.3, 44.4, 44.5_
 
-  - [~]* 34.2 Write property test for warm start
+  - [x]* 34.2 Write property test for warm start
     - **Property 44: Warm start applies each Sample once**
     - **Validates: Requirements 44.1, 44.2, 44.3, 44.5**
 

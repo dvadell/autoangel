@@ -98,6 +98,22 @@ defmodule AutoangelTsdb do
   end
 
   @impl true
+  def read_anomaly_events(handle, from_ms, to_ms) do
+    with_conn(handle, fn conn ->
+      sql =
+        "SELECT s.name, s.labels, (extract(epoch from a.start_time) * 1000)::bigint FROM anomalies a JOIN series s ON s.id = a.series_id WHERE a.start_time >= $1 AND a.start_time < $2 ORDER BY a.start_time"
+
+      case query_read(conn, sql, [timestamp(from_ms), timestamp(to_ms)]) do
+        {:ok, rows} ->
+          {:ok, for([name, labels, ts] <- rows, do: {{name, Enum.sort(labels)}, ts})}
+
+        other ->
+          other
+      end
+    end)
+  end
+
+  @impl true
   def read_aggregates(handle, series_ids, from, to, resolution)
       when resolution in [:minute, :hour] do
     with_conn(handle, fn conn ->
