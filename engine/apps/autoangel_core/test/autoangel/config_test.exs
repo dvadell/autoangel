@@ -127,6 +127,51 @@ defmodule Autoangel.ConfigTest do
     )
   end
 
+  test "detection settings have defaults and are validated" do
+    {:ok, config} = Config.load("\n", %{})
+    assert config.seasonality == %{threshold: 0.3}
+    assert config.level_shift == %{min_samples: 10}
+    assert config.drift == %{threshold: 3.0, window: 4_096}
+    assert config.sensitivity == 1.0
+    assert config.series_overrides == []
+
+    assert_invalid_setting("[seasonality]\nthreshold = 0\n", "seasonality_threshold")
+    assert_invalid_setting("[seasonality]\nthreshold = 1.5\n", "seasonality_threshold")
+    assert_invalid_setting("[level_shift]\nmin_samples = 0\n", "level_shift_min_samples")
+    assert_invalid_setting("[level_shift]\nmin_samples = 1.5\n", "level_shift_min_samples")
+    assert_invalid_setting("[drift]\nthreshold = -1\n", "drift_threshold")
+    assert_invalid_setting("[drift]\nwindow = 0\n", "drift_window")
+  end
+
+  test "sensitivity must stay within 0.25 to 4.0" do
+    for value <- ["0.24", "4.1", "0", "-1"],
+        do: assert_invalid_setting("sensitivity = #{value}\n", "sensitivity")
+
+    for value <- ["0.25", "1", "4.0"],
+        do: assert({:ok, _} = Config.load("sensitivity = #{value}\n", %{}))
+  end
+
+  test "per-Series overrides are validated" do
+    ok = ~S"""
+    [[series_overrides]]
+    name = "errors_total"
+    sensitivity = 2.0
+    direction = "high"
+    """
+
+    assert {:ok, %{series_overrides: [%{name: "errors_total", sensitivity: 2.0}]}} =
+             Config.load(ok, %{})
+
+    for bad <- [
+          ~S([[series_overrides]]\nsensitivity = 2.0\n),
+          ~S([[series_overrides]]\nname = "x"\nsensitivity = 9\n),
+          ~S([[series_overrides]]\nname = "x"\ndirection = "sideways"\n),
+          ~S([[series_overrides]]\nname = "x"\nother = 1\n)
+        ] do
+      assert_invalid_setting(String.replace(bad, "\\n", "\n"), "series_overrides")
+    end
+  end
+
   defp assert_invalid_setting(source, setting) do
     log =
       ExUnit.CaptureLog.capture_log(fn ->

@@ -381,7 +381,8 @@ defmodule Autoangel.Kernel.ScoringTest do
 
       assert {:ok, decoded} = State.decode(state_bin)
       assert decoded.window == expected_window
-      assert decoded.longterm == nil
+      # The long-term reference holds every scored value (bounded by its window).
+      assert decoded.longterm == nil or is_list(decoded.longterm.blocks)
 
       assert byte_size(state_bin) <=
                byte_size(

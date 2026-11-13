@@ -16,7 +16,8 @@ defmodule Autoangel.Detect.Decision do
               lower: nil,
               upper: nil,
               baseline_type: nil,
-              learning?: false
+              learning?: false,
+              event_like?: false
   end
 
   defmodule Meta do
@@ -41,8 +42,19 @@ defmodule Autoangel.Detect.Decision do
               seasonal: nil,
               direction_override: nil,
               sensitivity_override: nil,
-              warming?: false
+              warming?: false,
+              direction: nil,
+              dir_stats: %{n: 0, zeros: 0, min: nil}
   end
+
+  # Samples needed before the direction of a Series is inferred, and the share of
+  # zero values that marks a Series as bound to a floor of zero.
+  @direction_min_samples 30
+  @floor_share 0.2
+  # Typical_Interval (ms) from which a Series counts as event-like, and the
+  # coefficient of variation of the spacing above which it does.
+  @event_interval_ms 600_000
+  @event_cv 1.0
 
   @type config :: map() | keyword()
   @type event ::
@@ -70,6 +82,8 @@ defmodule Autoangel.Detect.Decision do
     {meta, _kind_changed?} = apply_kind(meta, kind)
     {meta, events} = resolve_missing(meta, recv_ms)
     meta = update_sample_metadata(meta, result, ts, recv_ms)
+    meta = update_direction(meta, result)
+    meta = classify_event_like(meta, result)
     meta = maybe_start_learning(meta, ts)
     meta = maybe_finish_learning(meta, ts, cfg)
 
@@ -82,33 +96,132 @@ defmodule Autoangel.Detect.Decision do
   defp sample_step(meta, _result, _now_recv, _cfg), do: {meta, []}
 
   defp scored_sample(meta, result, ts, score, cfg, events) do
+    {meta, events, shifted?} = apply_level_shift(meta, result, events)
+
+    {meta, events} =
+      if shifted?, do: {meta, events}, else: value_step(meta, result, ts, score, cfg, events)
+
+    {meta, events} = apply_drift(meta, result, cfg, events)
+    meta = set_status(meta)
+    {meta, events ++ status_event(meta, meta.status)}
+  end
+
+  defp value_step(meta, result, ts, score, cfg, events) do
     anomalous? = anomalous?(meta, result, score, cfg)
     open? = not is_nil(meta.open_value_anomaly)
 
-    {meta, events} =
-      cond do
-        anomalous? and not open? ->
-          run = extend_run(meta.run, ts)
-          meta = %{meta | run: run, calm_run: nil}
+    cond do
+      anomalous? and not open? ->
+        run = extend_run(meta.run, ts)
+        meta = %{meta | run: run, calm_run: nil}
 
-          if persists?(run, cfg) do
-            anomaly = make_anomaly(meta, result, run.first_ts, :value, nil, learning?(meta))
+        if persists?(run, cfg) do
+          anomaly = make_anomaly(meta, result, run.first_ts, :value, nil, learning?(meta))
 
-            {%{meta | open_value_anomaly: anomaly, run: nil},
-             events ++ [{:anomaly_started, anomaly}]}
-          else
-            {meta, events}
-          end
+          {%{meta | open_value_anomaly: anomaly, run: nil}, events ++ [{:anomaly_started, anomaly}]}
+        else
+          {meta, events}
+        end
 
-        anomalous? ->
-          {%{meta | run: nil, calm_run: nil}, events}
+      anomalous? ->
+        {%{meta | run: nil, calm_run: nil}, events}
 
-        true ->
-          resolve_value_if_needed(meta, result, ts, cfg, events)
-      end
+      true ->
+        resolve_value_if_needed(meta, result, ts, cfg, events)
+    end
+  end
 
-    meta = set_status(meta)
-    {meta, events ++ status_event(meta, meta.status)}
+  # --- level shift (Requirements 13.1 to 13.5) ------------------------------------
+  #
+  # The kernel reports a changepoint once and rebuilds its Baseline from the
+  # post-change Samples. A value Anomaly that is open closes into the level-shift
+  # Anomaly, which then ends like any other once the Series stays calm.
+  defp apply_level_shift(meta, %{level_shift: shift} = result, events) do
+    {closed, events} = close_open(meta, shift.start_ts, events)
+
+    anomaly =
+      make_anomaly(
+        closed,
+        Map.put(result, :observed, shift.level),
+        shift.start_ts,
+        :level_shift,
+        nil,
+        learning?(closed)
+      )
+
+    meta = %{closed | open_value_anomaly: anomaly, run: nil, calm_run: nil, open_drift: nil}
+    {meta, events ++ [{:anomaly_started, anomaly}], true}
+  end
+
+  defp apply_level_shift(meta, _result, events), do: {meta, events, false}
+
+  # Closes the open value and drift Anomalies at `end_ms`.
+  defp close_open(meta, end_ms, events) do
+    resolved =
+      for anomaly <- [meta.open_value_anomaly, meta.open_drift],
+          not is_nil(anomaly),
+          do: {:anomaly_resolved, %{anomaly | end_ms: end_ms}}
+
+    {meta, events ++ resolved}
+  end
+
+  # --- drift (Requirements 16.1 to 16.5) -------------------------------------------
+
+  defp apply_drift(meta, result, cfg, events) do
+    drift = Map.get(result, :drift)
+    threshold = number(config_get(cfg, [:drift, :threshold], 3.0), 3.0)
+
+    cond do
+      not is_number(drift) ->
+        {meta, events}
+
+      drift > threshold and is_nil(meta.open_drift) and not learning?(meta) ->
+        anomaly =
+          make_anomaly(meta, result, Map.get(result, :ts, meta.latest_ts), :drift, nil, false)
+
+        {%{meta | open_drift: anomaly}, events ++ [{:anomaly_started, anomaly}]}
+
+      drift <= threshold and not is_nil(meta.open_drift) ->
+        ended = %{meta.open_drift | end_ms: Map.get(result, :ts, meta.latest_ts)}
+        {%{meta | open_drift: nil}, events ++ [{:anomaly_resolved, ended}]}
+
+      true ->
+        {meta, events}
+    end
+  end
+
+  # --- direction awareness (Requirements 15.1 to 15.7) -------------------------------
+
+  defp update_direction(meta, %{observed: observed}) when is_number(observed) do
+    stats = meta.dir_stats
+    n = stats.n + 1
+    zeros = stats.zeros + if(observed == 0, do: 1, else: 0)
+    min = if is_nil(stats.min), do: observed, else: min(stats.min, observed)
+    stats = %{n: n, zeros: zeros, min: min}
+    %{meta | dir_stats: stats, direction: infer_direction(stats) || meta.direction}
+  end
+
+  defp update_direction(meta, _result), do: meta
+
+  # `:high` for a Series bound to a floor of zero (values never below zero, and a
+  # good share exactly zero), `:both` otherwise, and `nil` (treated as `:both`)
+  # until there are enough Samples.
+  defp infer_direction(%{n: n}) when n < @direction_min_samples, do: nil
+
+  defp infer_direction(%{n: n, zeros: zeros, min: min}) do
+    if min == 0 and zeros / n >= @floor_share, do: :high, else: :both
+  end
+
+  # --- event-like Series (Requirements 20.1 to 20.4) ------------------------------------
+
+  defp classify_event_like(meta, result) do
+    interval = Map.get(result, :typical_interval_ms) || meta.typical_interval_ms
+    cv = Map.get(result, :spacing_cv)
+
+    event_like? =
+      (is_number(interval) and interval >= @event_interval_ms) or (is_number(cv) and cv > @event_cv)
+
+    %{meta | event_like?: event_like?}
   end
 
   defp resolve_value_if_needed(%{open_value_anomaly: nil} = meta, _result, _ts, _cfg, events),
@@ -163,20 +276,20 @@ defmodule Autoangel.Detect.Decision do
 
   defp anomalous?(meta, result, score, cfg) do
     threshold = effective_threshold(meta, cfg)
-    direction = meta.direction_override || :both
-    observed = Map.get(result, :observed)
-    lower = Map.get(result, :lower)
-    upper = Map.get(result, :upper)
+    direction = meta.direction_override || meta.direction || :both
 
-    direction_ok? =
-      case {direction, observed, lower, upper} do
-        {:high, value, _, high} when is_number(value) and is_number(high) -> value > high
-        {:low, value, low, _} when is_number(value) and is_number(low) -> value < low
-        _ -> true
-      end
-
-    is_number(score) and score >= threshold and direction_ok?
+    is_number(score) and score >= threshold and direction_ok?(direction, result)
   end
+
+  # Only the anomalous side counts for a `:high` or `:low` Series.
+  defp direction_ok?(:high, %{observed: value, upper: high})
+       when is_number(value) and is_number(high),
+       do: value > high
+
+  defp direction_ok?(:low, %{observed: value, lower: low}) when is_number(value) and is_number(low),
+    do: value < low
+
+  defp direction_ok?(_direction, _result), do: true
 
   defp effective_threshold(meta, cfg) do
     base =
@@ -246,6 +359,9 @@ defmodule Autoangel.Detect.Decision do
   defp set_status(%{open_value_anomaly: anomaly} = meta) when not is_nil(anomaly),
     do: %{meta | status: :anomalous}
 
+  defp set_status(%{open_drift: anomaly} = meta) when not is_nil(anomaly),
+    do: %{meta | status: :anomalous}
+
   defp set_status(meta), do: %{meta | status: :healthy}
 
   defp status_event(_meta, _status), do: []
@@ -267,7 +383,8 @@ defmodule Autoangel.Detect.Decision do
       lower: Map.get(result, :lower),
       upper: Map.get(result, :upper),
       baseline_type: Map.get(result, :baseline_type),
-      learning?: learning?
+      learning?: learning?,
+      event_like?: meta.event_like?
     }
   end
 
@@ -308,7 +425,8 @@ defmodule Autoangel.Detect.Decision do
   defp missing_sweep?(%{sweep?: true}), do: true
   defp missing_sweep?(_), do: false
 
-  defp normalize_meta(%Meta{} = meta), do: meta
+  # Rebuilding fills fields a checkpoint written by an older version lacks.
+  defp normalize_meta(%Meta{} = meta), do: struct(Meta, Map.from_struct(meta))
 
   defp normalize_meta(meta) do
     fields = Map.keys(Meta.__struct__()) -- [:__struct__]

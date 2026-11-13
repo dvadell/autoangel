@@ -36,11 +36,14 @@ defmodule Autoangel.ApplicationDetectionConfigTest do
       })
       |> Autoangel.Application.decision_cfg()
 
-    assert cfg == %{
-             learning: %{duration: 7, cycles: 3},
-             persistence: %{n: 1, m: 9},
-             missing_data: %{multiple: 4.5, sweep_interval: 3_600}
-           }
+    assert Map.keys(cfg) |> Enum.sort() ==
+             [:drift, :learning, :missing_data, :persistence, :sensitivity, :series_overrides]
+
+    assert cfg.learning == %{duration: 7, cycles: 3}
+    assert cfg.persistence == %{n: 1, m: 9}
+    assert cfg.missing_data == %{multiple: 4.5, sweep_interval: 3_600}
+    # Transport settings never reach detection.
+    refute Map.has_key?(cfg, :http)
   end
 
   test "a configured value reaches a started Worker" do

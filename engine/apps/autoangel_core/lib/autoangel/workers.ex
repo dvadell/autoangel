@@ -679,7 +679,8 @@ defmodule Autoangel.Workers.Worker do
     meta = %Decision.Meta{
       key: key,
       kind: kind,
-      sensitivity_override: persisted_override(state, key)
+      sensitivity_override: persisted_override(state, key) || configured(state, key, :sensitivity),
+      direction_override: configured(state, key, :direction)
     }
 
     # The Series row is enqueued at creation, ahead of every dependent item.
@@ -716,6 +717,20 @@ defmodule Autoangel.Workers.Worker do
 
     Map.put(series, :stored?, true)
   end
+
+  # A per-Series setting from `series_overrides` in the configuration (matched by
+  # metric name). A direction given as text becomes an atom here.
+  defp configured(state, {name, _labels}, field) do
+    overrides = Map.get(state.decision_cfg, :series_overrides, [])
+
+    case Enum.find(overrides, &(Map.get(&1, :name) == name and Map.has_key?(&1, field))) do
+      nil -> nil
+      entry -> entry |> Map.fetch!(field) |> direction_atom(field)
+    end
+  end
+
+  defp direction_atom(value, :direction) when is_binary(value), do: String.to_existing_atom(value)
+  defp direction_atom(value, _field), do: value
 
   # A "this was normal" override persisted before this Worker created the Series.
   defp persisted_override(%{state_store: nil}, _key), do: nil

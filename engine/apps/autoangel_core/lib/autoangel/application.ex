@@ -46,6 +46,7 @@ defmodule Autoangel.Application do
            Keyword.merge(common,
              state_store: Autoangel.StateStore,
              decision_cfg: decision_cfg(config),
+             kernel_params: kernel_params(config),
              sweep_interval: seconds(config, [:missing_data, :sweep_interval], 15),
              scrape_status_table: :autoangel_scrape_status,
              history: storage != :none,
@@ -119,7 +120,25 @@ defmodule Autoangel.Application do
 
   @doc "The detection settings of the loaded configuration that every Worker applies."
   @spec decision_cfg(map()) :: map()
-  def decision_cfg(config), do: Map.take(config, [:learning, :persistence, :missing_data])
+  def decision_cfg(config),
+    do:
+      Map.take(config, [
+        :learning,
+        :persistence,
+        :missing_data,
+        :drift,
+        :sensitivity,
+        :series_overrides
+      ])
+
+  @doc "Kernel parameters from the level-shift and drift settings of the configuration."
+  @spec kernel_params(map()) :: Autoangel.Kernel.Params.t()
+  def kernel_params(config) do
+    %Autoangel.Kernel.Params{
+      level_shift_min_samples: get_in(config, [:level_shift, :min_samples]) || 10,
+      longterm_window: get_in(config, [:drift, :window]) || 4_096
+    }
+  end
 
   @impl true
   def prep_stop(state) do

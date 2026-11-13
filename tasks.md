@@ -756,28 +756,28 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - **Property 44: Warm start applies each Sample once**
     - **Validates: Requirements 44.1, 44.2, 44.3, 44.5**
 
-- [ ] 35. Implement level shift, drift and direction awareness
-  - [~]* 35.1 Implement level-shift detection (P1)
+- [x] 35. Implement level shift, drift and direction awareness
+  - [x]* 35.1 Implement level-shift detection (P1)
     - CUSUM on robust-standardised values in the kernel with the minimum Samples setting (default 10, validated positive); one level-shift Anomaly per changepoint; close an open value Anomaly into it; rebuild the window and reset the long-term reference from post-changepoint Samples
     - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5_
 
-  - [~]* 35.2 Write property test for level shifts
+  - [x]* 35.2 Write property test for level shifts
     - **Property 20: Level shift happens once and then becomes normal**
     - **Validates: Requirements 13.1, 13.2, 13.3, 13.4**
 
-  - [~]* 35.3 Implement the long-term reference Baseline and drift (P1)
+  - [x]* 35.3 Implement the long-term reference Baseline and drift (P1)
     - Quantile-sketch long-term window (default 4,096 Samples) updated from scored values; divergence in long-term scaled-MAD units with threshold 3.0; one drift Anomaly outside learning, resolved at or below the threshold; validate threshold and window length
     - _Requirements: 16.1, 16.2, 16.3, 16.4, 16.5_
 
-  - [~]* 35.4 Write property test for drift
+  - [x]* 35.4 Write property test for drift
     - **Property 21: Drift state machine**
     - **Validates: Requirements 16.2, 16.3, 16.4**
 
-  - [~]* 35.5 Implement direction awareness (P1)
+  - [x]* 35.5 Implement direction awareness (P1)
     - Infer `:high` for floor-bound Series and `:both` otherwise, treat both as anomalous until inferred, apply validated per-Series overrides, ignore non-anomalous directions for runs, never filter missing-data Anomalies
     - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 15.7_
 
-  - [~]* 35.6 Write property test for direction filtering
+  - [x]* 35.6 Write property test for direction filtering
     - **Property 18: Direction filtering**
     - **Validates: Requirements 15.3, 15.4, 15.5**
 

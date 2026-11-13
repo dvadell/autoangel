@@ -12,7 +12,7 @@ defmodule Autoangel.Kernel.Scoring do
     @moduledoc "Reference implementation of the robust rolling scoring kernel."
     @behaviour Autoangel.Kernel.Scoring
 
-    alias Autoangel.Kernel.{Params, State}
+    alias Autoangel.Kernel.{Params, Sketch, State}
 
     @ln2 :math.log(2.0)
     @max_float 1.797_693_134_862_315_7e308
@@ -62,6 +62,7 @@ defmodule Autoangel.Kernel.Scoring do
           upper: nil,
           baseline_type: nil,
           typical_interval_ms: typical,
+          spacing_cv: spacing_cv(spacing_values),
           spacing_ok?: spacing != nil
         }
 
@@ -80,10 +81,15 @@ defmodule Autoangel.Kernel.Scoring do
 
           window = push_window(state.window, observed, params.window_size)
 
+          {result, window, level, longterm} =
+            track_changes(result, window, state, observed, ts, params)
+
           {%{
              state
              | kind: kind,
                window: window,
+               level: level,
+               longterm: longterm,
                seasonal: update_seasonal(state.seasonal, ts, observed),
                head: 0,
                capacity: params.window_size,
@@ -173,7 +179,120 @@ defmodule Autoangel.Kernel.Scoring do
           upper: max(lower, upper),
           baseline_type: baseline_type
       }
+      |> Map.put(:z, safe_div(safe_difference(value, med), scale))
+      |> Map.put(:scale, scale)
     end
+
+    # --- level shift (CUSUM) and drift --------------------------------------------
+
+    @reset_level %{
+      cusum_pos: 0.0,
+      cusum_neg: 0.0,
+      pending: 0,
+      pending_level: 0.0,
+      pending_first_ts: 0
+    }
+
+    defp track_changes(%{score: nil} = result, window, state, _observed, _ts, _params),
+      do: {result, window, state.level, state.longterm}
+
+    defp track_changes(result, window, state, observed, ts, params) do
+      {level, candidate} =
+        if mature?(window, params),
+          do: cusum(state.level, Map.get(result, :z, 0.0), observed, ts, params),
+          else: {@reset_level, nil}
+
+      if candidate && confirmed?(candidate, result, window, params) do
+        # Rebuild the Baseline from the post-change Samples only and restart the
+        # long-term reference from them (Requirements 13.3, 13.4).
+        window = Enum.take(window, -candidate.count)
+        sketch = Sketch.from_values(window, params.longterm_window)
+
+        {result |> Map.put(:level_shift, Map.delete(candidate, :next)) |> Map.put(:drift, nil),
+         window, @reset_level, to_longterm(sketch)}
+      else
+        level = if candidate, do: candidate.next, else: level
+        sketch = Sketch.add(longterm_centroids(state.longterm), observed, params.longterm_window)
+        {Map.put(result, :drift, drift(result, sketch, params)), window, level, to_longterm(sketch)}
+      end
+    end
+
+    # A Baseline that is still forming cannot tell a level shift from noise: it
+    # needs at least 32 Samples and twice the minimum shift length.
+    defp mature?(window, params),
+      do: length(window) > max(32, 2 * params.level_shift_min_samples)
+
+    # A burst of outliers leaves the CUSUM high for a while after the values are
+    # back to normal. A real level shift also shows in the latest Samples: their
+    # median sits at least one robust sigma away from the old Baseline, on the
+    # side of the shift.
+    defp confirmed?(candidate, result, window, params) do
+      recent = Enum.take(window, -params.level_shift_min_samples)
+      center = (result.lower + result.upper) / 2
+      offset = (median(recent) - center) / max(result.scale, params.scale_floor)
+
+      if candidate.direction == :up, do: offset >= 1.0, else: offset <= -1.0
+    end
+
+    # Returns `{level, nil}` or `{level, %{start_ts, level, count, direction}}`.
+    defp cusum(level, z, observed, ts, params) do
+      z = clamp(z * 1.0, -params.cusum_clip, params.cusum_clip)
+      pos = max(0.0, level.cusum_pos + z - params.cusum_k)
+      neg = max(0.0, level.cusum_neg - z - params.cusum_k)
+
+      if pos == 0.0 and neg == 0.0,
+        do: {@reset_level, nil},
+        else: advance(level, {pos, neg}, observed, ts, params)
+    end
+
+    defp advance(level, {pos, neg}, observed, ts, params) do
+      pending = min(level.pending + 1, 65_535)
+      first = if level.pending == 0, do: ts, else: level.pending_first_ts
+      mean = (level.pending_level * level.pending + observed) / pending
+
+      next = %{
+        cusum_pos: pos,
+        cusum_neg: neg,
+        pending: pending,
+        pending_level: mean,
+        pending_first_ts: first
+      }
+
+      candidate = %{
+        start_ts: first,
+        level: mean,
+        count: pending,
+        direction: if(pos >= neg, do: :up, else: :down),
+        next: next
+      }
+
+      if pending >= params.level_shift_min_samples and max(pos, neg) >= params.cusum_h,
+        do: {next, candidate},
+        else: {next, nil}
+    end
+
+    defp longterm_centroids(%{blocks: [%{centroids: centroids} | _]}), do: centroids
+    defp longterm_centroids(_none), do: []
+
+    defp to_longterm([]), do: nil
+    defp to_longterm(centroids), do: %{blocks: [%{n: length(centroids), centroids: centroids}]}
+
+    # Divergence of the rolling median from the long-term median, in long-term
+    # scaled-MAD units. `nil` until the sketch holds twice the rolling window, and
+    # for per-phase seasonal Baselines (their median moves by design).
+    defp drift(%{baseline_type: :robust, lower: lower, upper: upper}, sketch, params) do
+      with true <- Sketch.total(sketch) >= 2 * params.window_size,
+           {median, mad} <- Sketch.median_mad(sketch) do
+        scale =
+          max(params.mad_scale * mad, max(params.scale_floor, params.scale_fraction * abs(median)))
+
+        abs((lower + upper) / 2 - median) / scale
+      else
+        _ -> nil
+      end
+    end
+
+    defp drift(_result, _sketch, _params), do: nil
 
     # --- per-phase seasonal Baseline -------------------------------------------
 
@@ -255,6 +374,20 @@ defmodule Autoangel.Kernel.Scoring do
       if rem(n, 2) == 1,
         do: Enum.at(sorted, div(n, 2)),
         else: Enum.at(sorted, div(n, 2) - 1) / 2 + Enum.at(sorted, div(n, 2)) / 2
+    end
+
+    # Coefficient of variation of the recent spacings; `nil` with fewer than four.
+    defp spacing_cv(values) when length(values) < 4, do: nil
+
+    defp spacing_cv(values) do
+      mean = Enum.sum(values) / length(values)
+
+      if mean <= 0 do
+        nil
+      else
+        variance = Enum.sum(for v <- values, do: (v - mean) * (v - mean)) / length(values)
+        :math.sqrt(variance) / mean
+      end
     end
 
     defp median_spacing([]), do: nil
@@ -341,19 +474,32 @@ defmodule Autoangel.Kernel.Scoring do
 
     defp validate_params(%Params{window_size: size} = params)
          when is_integer(size) and size > 0 and size <= 65_535 do
-      valid_numbers =
-        Enum.all?([params.mad_scale, params.scale_floor, params.scale_fraction], fn value ->
-          is_number(value) and finite?(value) and value > 0
-        end)
+      if valid_scales?(params) and valid_threshold?(params) and valid_change_params?(params),
+        do: {:ok, params},
+        else: {:error, :invalid_params}
+    end
 
-      valid_threshold =
-        finite?(params.score_threshold) and params.score_threshold >= 0 and
-          params.score_threshold <= 100
+    defp valid_scales?(params) do
+      Enum.all?([params.mad_scale, params.scale_floor, params.scale_fraction], fn value ->
+        is_number(value) and finite?(value) and value > 0
+      end)
+    end
 
-      if valid_numbers and valid_threshold, do: {:ok, params}, else: {:error, :invalid_params}
+    defp valid_threshold?(params) do
+      finite?(params.score_threshold) and params.score_threshold >= 0 and
+        params.score_threshold <= 100
     end
 
     defp validate_params(_), do: {:error, :invalid_params}
+
+    defp valid_change_params?(params) do
+      positive_integer?(params.level_shift_min_samples) and
+        positive_integer?(params.longterm_window) and
+        Enum.all?([params.cusum_k, params.cusum_h, params.cusum_clip], &positive_number?/1)
+    end
+
+    defp positive_integer?(value), do: is_integer(value) and value > 0
+    defp positive_number?(value), do: is_number(value) and value > 0
 
     defp validate_samples([]), do: :ok
 
