@@ -16,6 +16,10 @@ defmodule Console.Router do
     plug(:put_secure_browser_headers)
   end
 
+  pipeline :mcp do
+    plug(Console.MCP.Auth)
+  end
+
   pipeline :health do
     plug(:authenticate_unless_exempt)
   end
@@ -23,6 +27,11 @@ defmodule Console.Router do
   scope "/", Console do
     pipe_through(:health)
     get("/healthz", HealthController, :show)
+  end
+
+  scope "/", Console do
+    pipe_through(:mcp)
+    match(:*, "/mcp", MCP.Controller, :handle)
   end
 
   scope "/", Console do

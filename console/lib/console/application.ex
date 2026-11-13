@@ -59,6 +59,8 @@ defmodule Console.Application do
     :engine_not_reporting_seconds,
     :engine_url,
     :engine_token,
+    :mcp_token,
+    :mcp_write_tools,
     :recent_seconds,
     :chart_point_limit,
     :raw_retention_seconds,

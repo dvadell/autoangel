@@ -260,7 +260,7 @@ defmodule Console.SeriesLive.Show do
 
     socket = assign(socket, range: label, from: from, to: now)
 
-    case Data.impl().chart(series, from, now, now) do
+    case Data.impl().chart(series, from, now, now, []) do
       {:ok, chart} -> {:noreply, assign(socket, chart: chart, chart_error: false)}
       {:error, :database} -> {:noreply, assign(socket, chart: nil, chart_error: true)}
     end
@@ -342,7 +342,7 @@ defmodule Console.AnomalyLive.Show do
     to = if DateTime.compare(to, now) == :gt, do: now, else: to
 
     chart =
-      case anomaly.series && Data.impl().chart(anomaly.series, from, to, now) do
+      case anomaly.series && Data.impl().chart(anomaly.series, from, to, now, []) do
         {:ok, chart} -> chart
         _ -> nil
       end

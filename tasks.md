@@ -661,65 +661,65 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
 
 ### M4: Console MCP
 
-- [ ] 31. Implement the MCP_Server
-  - [~] 31.1 Implement the streamable HTTP transport at `/mcp`
+- [x] 31. Implement the MCP_Server
+  - [x] 31.1 Implement the streamable HTTP transport at `/mcp`
     - Transport adapter (library or direct JSON-RPC, open question 8, with the choice recorded in `docs/decisions.md`) that only translates to `Console.MCP.Tools`; the Engine exposes no MCP endpoint
     - _Requirements: 59.1, 59.5_
 
-  - [~] 31.2 Implement the `Console.MCP.Tools` core
+  - [x] 31.2 Implement the `Console.MCP.Tools` core
     - Output budget (32 KiB) with whole items and a truncation flag only when items were left out; untrusted-value marking, escaping and 256-character truncation; parameter validation naming each invalid parameter; stable error codes with no partial data on store failure
     - _Requirements: 60.4, 60.6, 60.7, 63.4, 63.5, 63.6_
 
-  - [~] 31.3 Implement `list_anomalies`, `explain_anomaly` and `query_series`
+  - [x] 31.3 Implement `list_anomalies`, `explain_anomaly` and `query_series`
     - Filters by `since`, `min_score` and `filter`; explanation with stored candidates or the no-candidates note; `query_series` with the 500-point cap, coarser tier when needed and `resolution_used`; not-found errors
     - _Requirements: 17.6, 17.7, 19.4, 19.6, 19.7, 21.2, 21.3, 60.1, 60.2, 60.3, 60.5_
 
-  - [~] 31.4 Implement write-tool gating
+  - [x] 31.4 Implement write-tool gating
     - Tool list contains only read tools unless `mcp.write_tools = true`; calling a write tool while disabled returns "write tools are disabled" without calling the Control_API
     - _Requirements: 63.1, 63.2, 63.3_
 
-  - [~] 31.5 Implement the stdio entry point
+  - [x] 31.5 Implement the stdio entry point
     - `autoangel-console mcp-stdio` escript forwarding bytes unchanged to `/mcp` with the MCP credential, writing a JSON-RPC error and continuing when the endpoint is unreachable
     - _Requirements: 59.2, 59.3, 59.4_
 
-  - [~] 31.6 Implement `Console.MCP.Auth` with a separate MCP credential setting
+  - [x] 31.6 Implement `Console.MCP.Auth` with a separate MCP credential setting
     - Require an MCP credential on every `/mcp` request, read from settings separate from the web credentials; reject missing, malformed, wrong or web-only credentials with no data; reject MCP-only credentials on web routes
     - Required by the P0 security defaults; it also covers the P1 Requirement 64 criteria
     - _Requirements: 64.1, 64.2, 64.3, 74.1, 74.2, 74.7_
 
-  - [~]* 31.7 Implement `list_series` (P1)
+  - [x]* 31.7 Implement `list_series` (P1)
     - Series with stored status matching `filter` under the `list_anomalies` rules, output budget, parameter and store errors
     - _Requirements: 61.1, 61.2, 61.3, 61.4_
 
-  - [~]* 31.8 Implement `give_feedback` (P1)
+  - [x]* 31.8 Implement `give_feedback` (P1)
     - Registered only with write tools enabled; validate `id` and `verdict`; one Control_API request; success only after a success status; error results for client errors and an unavailable Control_API
     - _Requirements: 62.1, 62.2, 62.3, 62.4, 62.5, 65.10_
 
-  - [~]* 31.9 Write property test for transport equivalence
+  - [x]* 31.9 Write property test for transport equivalence
     - **Property 58: stdio and HTTP MCP transports are equivalent**
     - **Validates: Requirements 59.2, 59.3**
 
-  - [~]* 31.10 Write property test for MCP list filters
+  - [x]* 31.10 Write property test for MCP list filters
     - **Property 59: MCP list filters**
     - **Validates: Requirements 60.1, 61.1**
 
-  - [~]* 31.11 Write property test for the query_series point cap
+  - [x]* 31.11 Write property test for the query_series point cap
     - **Property 60: query_series respects the point cap**
     - **Validates: Requirements 60.3**
 
-  - [~]* 31.12 Write property test for the MCP output budget
+  - [x]* 31.12 Write property test for the MCP output budget
     - **Property 61: MCP output budget**
     - **Validates: Requirements 60.4, 61.2**
 
-  - [~]* 31.13 Write property test for invalid MCP parameters
+  - [x]* 31.13 Write property test for invalid MCP parameters
     - **Property 62: Invalid MCP parameters are named**
     - **Validates: Requirements 60.6, 61.3**
 
-  - [~]* 31.14 Write property test for untrusted value marking
+  - [x]* 31.14 Write property test for untrusted value marking
     - **Property 63: Untrusted values cannot escape their marking**
     - **Validates: Requirements 63.4, 63.5, 63.6**
 
-  - [~]* 31.15 Write unit tests for MCP tools and transport
+  - [x]* 31.15 Write unit tests for MCP tools and transport
     - Tool list with write tools on and off, `give_feedback` against a fake Control_API per response class, stdio forwarder with the endpoint down, credential rotation after restart
     - _Requirements: 59.4, 62.4, 62.5, 63.1, 63.3, 64.4_
 

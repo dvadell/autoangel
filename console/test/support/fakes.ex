@@ -37,7 +37,7 @@ defmodule Console.Test.FakeData do
   def anomaly(id), do: answer(fn -> Enum.find(get(:anomalies, []), &(&1.id == id)) end)
 
   @impl true
-  def chart(_series, from, to, now) do
+  def chart(_series, from, to, now, _opts \\ []) do
     answer(fn ->
       chart = get(:chart, %{tier: :raw, points: [], bands: []})
       Map.put(chart, :markers, Console.Chart.markers(get(:anomalies, []), from, to, now))

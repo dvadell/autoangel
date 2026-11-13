@@ -15,6 +15,8 @@ defmodule Console.Config do
   | `AUTOANGEL_CONSOLE_SECRET_KEY_BASE` | signs the session cookie, at least 64 bytes | required |
   | `AUTOANGEL_CONSOLE_ENGINE_URL` | Engine Control_API base URL for feedback | none (feedback off) |
   | `AUTOANGEL_CONSOLE_ENGINE_TOKEN` | bearer token for the Control_API | none |
+  | `AUTOANGEL_CONSOLE_MCP_TOKEN` | bearer token for `/mcp`, separate from the web credentials | none (`/mcp` refuses everything) |
+  | `AUTOANGEL_CONSOLE_MCP_WRITE_TOOLS` | `true` offers the write tool `give_feedback` | `false` |
   | `AUTOANGEL_CONSOLE_RECENT_SECONDS` | how long ended Anomalies stay listed | `86400` |
   | `AUTOANGEL_CONSOLE_CHART_POINT_LIMIT` | most points a chart draws | `2000` |
   | `AUTOANGEL_CONSOLE_RAW_RETENTION_SECONDS` | Engine raw retention | `1209600` (14 d) |
@@ -39,6 +41,8 @@ defmodule Console.Config do
           secret_key_base: String.t(),
           engine_url: String.t() | nil,
           engine_token: String.t() | nil,
+          mcp_token: String.t() | nil,
+          mcp_write_tools: boolean(),
           recent_seconds: pos_integer(),
           chart_point_limit: pos_integer(),
           raw_retention_seconds: pos_integer(),
@@ -62,6 +66,8 @@ defmodule Console.Config do
       health_exempt: parse_boolean(get(env, "HEALTH_EXEMPT"), "HEALTH_EXEMPT"),
       secret_key_base: parse_secret(get(env, "SECRET_KEY_BASE")),
       engine_url: parse_url(get(env, "ENGINE_URL")),
+      mcp_write_tools: parse_boolean(get(env, "MCP_WRITE_TOOLS"), "MCP_WRITE_TOOLS"),
+      mcp_token: parse_mcp_token(get(env, "MCP_TOKEN"), get(env, "TOKEN"), get(env, "PASSWORD")),
       recent_seconds: positive(env, "RECENT_SECONDS", 86_400),
       chart_point_limit: positive(env, "CHART_POINT_LIMIT", 2_000),
       raw_retention_seconds: positive(env, "RAW_RETENTION_SECONDS", 14 * 86_400),
@@ -167,6 +173,16 @@ defmodule Console.Config do
       true ->
         {:ok, basic ++ bearer}
     end
+  end
+
+  # The MCP credential is never accepted on web routes, and a web credential is
+  # never accepted on `/mcp`, so the two must differ.
+  defp parse_mcp_token(nil, _web_token, _web_password), do: {:ok, nil}
+
+  defp parse_mcp_token(token, web_token, web_password) do
+    if token in [web_token, web_password],
+      do: {:error, "#{var("MCP_TOKEN")} must differ from the web credentials"},
+      else: {:ok, token}
   end
 
   defp parse_secret(nil), do: {:error, "#{var("SECRET_KEY_BASE")} is required"}

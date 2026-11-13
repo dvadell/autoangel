@@ -43,3 +43,15 @@ Compile-time selection: `Autoangel.Kernel.Selected` is fixed to `:elixir` while 
 Defaults marked provisional in the design remain subject to the M0 benchmark. Changes and their measured rationale will be recorded here.
 
 The measured NIF gate fixes the maximum Elixir batch size at 2 Samples and retains a 1 ms call-duration target. The M0 decision is recorded in the design defaults; no Rust kernel is promoted.
+
+## MCP transport (open question 8, task 31.1)
+
+Decision: the MCP_Server speaks JSON-RPC 2.0 directly, with no MCP library.
+
+- The Console exposes one endpoint, `POST /mcp`. It answers `application/json` (or 202 for a notification). There is no event stream, so `GET` and `DELETE` answer 405.
+- `Console.MCP.Server` only translates JSON-RPC to `Console.MCP.Tools` and back. It handles `initialize`, `ping`, `tools/list` and `tools/call`, and offers protocol versions 2025-06-18, 2025-03-26 and 2024-11-05.
+- Reason: the server needs four methods and no streaming. A library would add dependencies to a release that keeps its dependency set small, and would still need the credential, output budget and marking logic written by hand.
+- The Engine exposes no MCP endpoint.
+- `/mcp` needs a bearer token from `AUTOANGEL_CONSOLE_MCP_TOKEN`, kept apart from the web credentials. Without it every request gets 401. The configuration refuses an MCP token equal to a web credential.
+- Write tools (`give_feedback`) are listed only with `AUTOANGEL_CONSOLE_MCP_WRITE_TOOLS=true`.
+- `autoangel-console mcp-stdio` (an escript built with `mix escript.build` in `console/`) forwards each stdin line unchanged to `/mcp` and writes the response line to stdout.

@@ -16,8 +16,13 @@ defmodule Console.Data do
   @callback list_series(search :: String.t()) :: result([map()])
   @callback series(ids :: [String.t()]) :: result([map()])
   @callback anomaly(id :: String.t()) :: result(map() | nil)
-  @callback chart(series :: map(), from :: DateTime.t(), to :: DateTime.t(), now :: DateTime.t()) ::
-              result(map())
+  @callback chart(
+              series :: map(),
+              from :: DateTime.t(),
+              to :: DateTime.t(),
+              now :: DateTime.t(),
+              opts :: [point_limit: pos_integer()]
+            ) :: result(map())
   @callback latest_heartbeat() :: result(DateTime.t() | nil)
 
   @doc "The configured implementation."
@@ -86,11 +91,11 @@ defmodule Console.Data.Repo do
   end
 
   @impl true
-  def chart(series, from, to, now) do
+  def chart(series, from, to, now, opts) do
     safely(fn ->
       b = bounds(from, to)
       ids = [series.id]
-      limit = setting(:chart_point_limit, 2_000)
+      limit = Keyword.get(opts, :point_limit) || setting(:chart_point_limit, 2_000)
 
       tier =
         Chart.tier(%{

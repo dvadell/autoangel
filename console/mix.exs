@@ -8,6 +8,7 @@ defmodule AutoangelConsole.MixProject do
       elixir: "~> 1.15",
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
+      escript: [main_module: Console.MCP.Stdio, name: "autoangel-console", app: nil],
       releases: [
         autoangel_console: [
           include_executables_for: [:unix],
