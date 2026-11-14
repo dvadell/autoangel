@@ -55,3 +55,31 @@ Decision: the MCP_Server speaks JSON-RPC 2.0 directly, with no MCP library.
 - `/mcp` needs a bearer token from `AUTOANGEL_CONSOLE_MCP_TOKEN`, kept apart from the web credentials. Without it every request gets 401. The configuration refuses an MCP token equal to a web credential.
 - Write tools (`give_feedback`) are listed only with `AUTOANGEL_CONSOLE_MCP_WRITE_TOOLS=true`.
 - `autoangel-console mcp-stdio` (an escript built with `mix escript.build` in `console/`) forwards each stdin line unchanged to `/mcp` and writes the response line to stdout.
+
+## Scale and footprint
+
+### Disk benchmark (2026-11-14T14:50:20Z)
+
+- Conditions: TimescaleDB 2.17 (PostgreSQL 16) in a container, 300 Series, one Sample per 60 s for 1 day(s), 432000 rows, the `samples` hypertable with its index, 1 chunk(s) compressed (segment by Series, order by time).
+- Disk per Series-day, compression off: 196.4 KiB (139.7 bytes per Sample).
+- Disk per Series-day, compression on: 11.6 KiB (8.2 bytes per Sample), 16.9 times smaller.
+
+### Scale benchmark (2026-11-14T14:49:44Z)
+
+- Machine: aarch64-apple-darwin24.6.0, 14 schedulers, 48.0 GiB RAM, OTP 27, Elixir 1.19.5.
+- Topology: Topology_A (Engine only, no storage backend), Samples pushed over HTTP to the ingest endpoint, kernel: Elixir.
+- Load: 20000 Series, one Sample per Series every 60 s, 2 cycles, 121.3 s of wall time.
+- Detection latency (40000 Samples): <= 0.001 s: 1 (0.0%), <= 0.005 s: 596 (1.49%), <= 0.01 s: 3328 (8.32%), <= 0.05 s: 24735 (61.84%), <= 0.1 s: 38722 (96.8%), <= 0.5 s: 40000 (100.0%), <= 1.0 s: 40000 (100.0%), <= 5.0 s: 40000 (100.0%); maximum 106.0 ms.
+- Deepest Worker queue: 0 Samples. Samples shed: 0. Pushes refused: 0.
+- Longest scoring call: 4.244 ms.
+- Memory: 11.67 MiB per 1,000 Series (Erlang VM total, before and after the load).
+
+### Scale benchmark (2026-11-14T14:47:42Z)
+
+- Machine: aarch64-apple-darwin24.6.0, 14 schedulers, 48.0 GiB RAM, OTP 27, Elixir 1.19.5.
+- Topology: Topology_A (Engine only, no storage backend), Samples pushed over HTTP to the ingest endpoint, kernel: Elixir.
+- Load: 20000 Series, one Sample per Series every 10 s, 6 cycles, 62.2 s of wall time.
+- Detection latency (120000 Samples): <= 0.001 s: 19 (0.02%), <= 0.005 s: 5413 (4.51%), <= 0.01 s: 12393 (10.33%), <= 0.05 s: 63818 (53.18%), <= 0.1 s: 117506 (97.92%), <= 0.5 s: 120000 (100.0%), <= 1.0 s: 120000 (100.0%), <= 5.0 s: 120000 (100.0%); maximum 106.0 ms.
+- Deepest Worker queue: 0 Samples. Samples shed: 0. Pushes refused: 0.
+- Longest scoring call: 5.279 ms.
+- Memory: 11.64 MiB per 1,000 Series (Erlang VM total, before and after the load).

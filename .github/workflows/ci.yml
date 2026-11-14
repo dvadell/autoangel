@@ -72,6 +72,11 @@ jobs:
         run: scripts/smoke_release.sh push engine/_build/prod/rel/autoangel target/release/autoangel-cli
       - name: Smoke test the Console release
         run: scripts/smoke_release.sh console console/_build/prod/rel/autoangel_console
+      - name: Privacy egress test
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends strace iproute2
+          python3 scripts/egress_check_test.py
+          scripts/privacy_egress_test.sh engine/_build/prod/rel/autoangel console/_build/prod/rel/autoangel_console target/release/autoangel-cli
       - name: Build the images
         run: |
           docker build -f docker/engine.Dockerfile -t autoangel-engine:${REV}-${{ matrix.arch }} .

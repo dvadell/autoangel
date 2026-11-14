@@ -867,12 +867,12 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - Per-architecture smoke tests that start the Engine to readiness and the Console to health; a macOS CI job that builds the Engine, Console and CLI and runs a CLI push against the Engine
     - _Requirements: 76.5, 76.6, 76.7_
 
-- [ ] 42. Implement privacy and scale verification
-  - [~] 42.1 Implement the privacy egress integration test
+- [x] 42. Implement privacy and scale verification
+  - [x] 42.1 Implement the privacy egress integration test
     - Run the Engine, Console and CLI in a network namespace with logged egress and assert connections only to configured destinations and no telemetry without an explicit opt-in per deliverable
     - _Requirements: 75.1, 75.2, 75.3, 75.4, 75.5_
 
-  - [~] 42.2 Implement the scale and footprint benchmark suite
+  - [x] 42.2 Implement the scale and footprint benchmark suite
     - 20,000-Series load at 10 s to 60 s intervals recording machine details, topology, duration, detection latency histogram, queue depth, maximum NIF call duration, memory per 1,000 Series and disk per Series-day with compression on and off into `docs/decisions.md`; fail the run on latency above 1 s or queue overflow
     - _Requirements: 71.1, 71.2, 71.3, 71.4, 72.1, 72.2, 72.3_
 

@@ -43,6 +43,7 @@ defmodule Autoangel.Metrics do
     micros = round(value * 1_000_000)
     :ets.update_counter(@table, {:sum, name}, {2, micros}, {{:sum, name}, 0})
     :ets.update_counter(@table, {:count, name}, {2, 1}, {{:count, name}, 0})
+    record_max(name, micros)
 
     Enum.each(Map.get(@histograms, name, []), fn bucket ->
       if value <= bucket,
@@ -51,6 +52,53 @@ defmodule Autoangel.Metrics do
     end)
 
     :ok
+  end
+
+  # The largest value seen, in microseconds. Two writers can race; the loser's
+  # value is at most one step below the maximum, which a benchmark can accept.
+  defp record_max(name, micros) do
+    case :ets.lookup(@table, {:max, name}) do
+      [{_key, current}] when current >= micros -> :ok
+      _ -> :ets.insert(@table, {{:max, name}, micros})
+    end
+  end
+
+  @doc "The largest observed value of a histogram, in seconds (0 when none)."
+  @spec max_observed(atom()) :: float()
+  def max_observed(name) do
+    ensure_started()
+
+    case :ets.lookup(@table, {:max, name}) do
+      [{_key, micros}] -> micros / 1_000_000
+      _ -> 0.0
+    end
+  end
+
+  @doc "Observation counts per histogram bucket as `[{upper_bound, cumulative_count}]`."
+  @spec buckets(atom()) :: [{number(), non_neg_integer()}]
+  def buckets(name) do
+    ensure_started()
+
+    for bound <- Map.get(@histograms, name, []) do
+      count =
+        case :ets.lookup(@table, {:bucket, name, bound}) do
+          [{_key, value}] -> value
+          _ -> 0
+        end
+
+      {bound, count}
+    end
+  end
+
+  @doc "How many values a histogram has seen."
+  @spec observations(atom()) :: non_neg_integer()
+  def observations(name) do
+    ensure_started()
+
+    case :ets.lookup(@table, {:count, name}) do
+      [{_key, value}] -> value
+      _ -> 0
+    end
   end
 
   @spec plugin_delivery(term(), atom()) :: :ok
