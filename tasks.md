@@ -495,7 +495,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - _Requirements: 41.1, 41.2, 41.3_
 
 - [x] 23. Implement feedback through the Control API
-  - [~] 23.1 Implement `Autoangel.Feedback.apply/2` and per-Series effective threshold
+  - [x] 23.1 Implement `Autoangel.Feedback.apply/2` and per-Series effective threshold
     - `mute` for a Series or Incident; `this was normal` sets `min(current_or_base, base × 0.5)` with a floor of 0.25 for each affected Series
     - Write the State_Store first, then update memory, then reply; leave memory unchanged on store failure
     - Apply per-Series sensitivity in `Decision` via `effective_threshold = clamp(100 − (100 − T) × s, 1, 99.9)`
