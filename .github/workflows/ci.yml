@@ -1,0 +1,135 @@
+name: ci
+
+# Native builds on both architectures from the same revision. Nothing is
+# cross-compiled: the amd64 job runs on an amd64 runner and the arm64 job on an
+# arm64 runner. Artifacts are named `<revision>-<arch>`. The publish job needs
+# every build job, so a revision is published only when both architectures built.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  REV: ${{ github.sha }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "27.3"
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: rustfmt, clippy
+      - run: scripts/quality_gate.sh
+
+  build:
+    needs: quality
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "27.3"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - name: Build the CLI
+        run: cargo build --release --locked -p autoangel-cli
+      # The Engine release holds no NIF while no kernel is promoted
+      # (docs/decisions.md). If one is promoted, build it here, so the NIF in the
+      # release is the one for this architecture:
+      #   cargo build --release --locked -p autoangel-kernels
+      - name: Build the Engine release
+        working-directory: engine
+        env:
+          MIX_ENV: prod
+        run: |
+          mix deps.get --only prod
+          mix release autoangel --overwrite
+      - name: Build the Console release
+        working-directory: console
+        env:
+          MIX_ENV: prod
+        run: |
+          mix deps.get --only prod
+          mix release autoangel_console --overwrite
+          mix escript.build
+      - name: Smoke test the Engine release
+        run: scripts/smoke_release.sh engine engine/_build/prod/rel/autoangel
+      - name: Smoke test a CLI push
+        run: scripts/smoke_release.sh push engine/_build/prod/rel/autoangel target/release/autoangel-cli
+      - name: Smoke test the Console release
+        run: scripts/smoke_release.sh console console/_build/prod/rel/autoangel_console
+      - name: Build the images
+        run: |
+          docker build -f docker/engine.Dockerfile -t autoangel-engine:${REV}-${{ matrix.arch }} .
+          docker build -f docker/console.Dockerfile -t autoangel-console:${REV}-${{ matrix.arch }} .
+          docker save autoangel-engine:${REV}-${{ matrix.arch }} autoangel-console:${REV}-${{ matrix.arch }} \
+            | gzip > images-${REV}-${{ matrix.arch }}.tar.gz
+      - name: Package the artifacts
+        run: |
+          mkdir -p dist
+          tar -C engine/_build/prod/rel -czf dist/engine-${REV}-${{ matrix.arch }}.tar.gz autoangel
+          tar -C console/_build/prod/rel -czf dist/console-${REV}-${{ matrix.arch }}.tar.gz autoangel_console
+          cp target/release/autoangel-cli dist/autoangel-cli-${REV}-${{ matrix.arch }}
+          cp console/autoangel-console dist/autoangel-console-${REV}-${{ matrix.arch }}
+          mv images-${REV}-${{ matrix.arch }}.tar.gz dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.sha }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    # The development build: Engine, Console and CLI on macOS, and a CLI push
+    # against the Engine.
+    needs: quality
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "27.3"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - run: cargo build --release --locked -p autoangel-cli
+      - name: Build the Engine and Console
+        run: |
+          (cd engine && MIX_ENV=prod mix deps.get --only prod && MIX_ENV=prod mix release autoangel --overwrite)
+          (cd console && MIX_ENV=prod mix deps.get --only prod && MIX_ENV=prod mix release autoangel_console --overwrite)
+      - run: scripts/smoke_release.sh push engine/_build/prod/rel/autoangel target/release/autoangel-cli
+
+  publish:
+    # Every build job must have passed, for both architectures.
+    needs: [build, macos]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ github.sha }}-*
+          path: artifacts
+      - name: Check that both architectures are present
+        run: |
+          for arch in amd64 arm64; do
+            test -d "artifacts/${REV}-${arch}" || { echo "missing ${REV}-${arch}"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: artifacts/

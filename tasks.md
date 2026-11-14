@@ -854,16 +854,16 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - **Property 65: Output size and hash**
     - **Validates: Requirements 69.1, 69.2**
 
-- [ ] 41. Implement packaging and CI builds
-  - [~] 41.1 Configure Engine and Console releases and container images
+- [x] 41. Implement packaging and CI builds
+  - [x] 41.1 Configure Engine and Console releases and container images
     - Engine release with compiled NIFs and the build-time plugin set fixed in `rel/`; separate Console release; Dockerfiles for `linux/amd64` and `linux/arm64`
     - _Requirements: 22.2, 65.1, 72.5, 76.3, 76.4_
 
-  - [~]* 41.2 Implement the multi-architecture CI pipeline (P1)
+  - [x]* 41.2 Implement the multi-architecture CI pipeline (P1)
     - Native amd64 and arm64 jobs building the NIF, Engine release and image from the same revision, packaging the matching NIF, labelling artifacts `rev-arch`, and a publish job that needs every build job
     - _Requirements: 50.1, 50.2, 50.3, 50.4, 50.5_
 
-  - [~] 41.3 Implement startup smoke tests and the macOS development build job
+  - [x] 41.3 Implement startup smoke tests and the macOS development build job
     - Per-architecture smoke tests that start the Engine to readiness and the Console to health; a macOS CI job that builds the Engine, Console and CLI and runs a CLI push against the Engine
     - _Requirements: 76.5, 76.6, 76.7_
 

@@ -1,0 +1,6 @@
+**/_build
+**/deps
+target
+.git
+**/*.beam
+console/autoangel-console
