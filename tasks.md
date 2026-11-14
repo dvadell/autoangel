@@ -876,12 +876,12 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - 20,000-Series load at 10 s to 60 s intervals recording machine details, topology, duration, detection latency histogram, queue depth, maximum NIF call duration, memory per 1,000 Series and disk per Series-day with compression on and off into `docs/decisions.md`; fail the run on latency above 1 s or queue overflow
     - _Requirements: 71.1, 71.2, 71.3, 71.4, 72.1, 72.2, 72.3_
 
-- [ ] 43. Write the operator documentation
-  - [~] 43.1 Write the Engine documentation
+- [x] 43. Write the operator documentation
+  - [x] 43.1 Write the Engine documentation
     - Running without TLS behind a reverse proxy, read-only role usage, pg_dump and physical backup and restore, data that is safe to lose, State_Store location outside the database, and footprint estimates with benchmark conditions and Engine version
     - _Requirements: 7.7, 42.1, 42.4, 42.5, 42.6, 42.7, 72.1, 72.2, 72.3, 72.4_
 
-  - [~] 43.2 Write the Console and CLI documentation
+  - [x] 43.2 Write the Console and CLI documentation
     - TLS termination at a reverse proxy for the Console; CLI run timestamp definition, retry settings and textfile behaviour
     - _Requirements: 57.6, 68.2, 68.6_
 
