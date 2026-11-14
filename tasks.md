@@ -656,7 +656,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - One plugin failing, a Worker killed, an Engine restart on the same State_Store volume
     - _Requirements: 73.7, 73.8, 73.9_
 
-- [~] 30. Checkpoint - M3 Console web complete
+- [x] 30. Checkpoint - M3 Console web complete
   - Ensure all tests pass, ask the user if questions arise.
 
 ### M4: Console MCP
@@ -885,7 +885,7 @@ Languages follow the design: Elixir/OTP for the Engine, Console and Replay_Harne
     - TLS termination at a reverse proxy for the Console; CLI run timestamp definition, retry settings and textfile behaviour
     - _Requirements: 57.6, 68.2, 68.6_
 
-- [~] 44. Final checkpoint - Ensure all tests pass
+- [x] 44. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

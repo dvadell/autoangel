@@ -38,7 +38,7 @@ for path in "${paths[@]}"; do
     fail "native library found (NIF): $file"
   done < <(find "$path" \( -path '*/_build/test' -o -name deps \) -prune -o \
     \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
-    -not -path '*/erts-*' -not -path '*/lib/crypto-*' -not -path '*/lib/asn1rt_nif-*' \
+    -not -path '*/erts-*' -not -path '*/lib/crypto-*' -not -path '*/lib/asn1-*' -not -path '*/lib/asn1rt_nif-*' \
     -not -path '*/lib/runtime_tools-*' -not -path '*/lib/os_mon-*' -not -path '*/lib/jinterface-*' \
     -not -path '*/lib/erl_interface-*' -print)
 
