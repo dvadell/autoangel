@@ -18,6 +18,6 @@ defmodule AutoangelTsdb.SchemaVersionCheckTest do
   end
 
   test "the mix task passes on the current tree" do
-    assert SchemaVersionCheck.run([]) == :ok
+    assert SchemaVersionCheck.check() == :ok
   end
 end

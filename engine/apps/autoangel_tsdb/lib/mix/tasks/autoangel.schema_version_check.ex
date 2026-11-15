@@ -12,7 +12,16 @@ defmodule Mix.Tasks.Autoangel.SchemaVersionCheck do
   @impl Mix.Task
   def run(_args) do
     Mix.Task.run("compile")
+    check()
+  end
 
+  @doc """
+  Runs the check without compiling. Tests call this instead of `run/1`: in an
+  umbrella, `compile` changes the VM's working directory, which breaks test
+  files that ExUnit is still loading by relative path.
+  """
+  @spec check() :: :ok
+  def check do
     case AutoangelTsdb.Migrations.check_version() do
       :ok ->
         Mix.shell().info("schema version check: ok (#{AutoangelTsdb.Migrations.version()})")
