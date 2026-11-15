@@ -28,6 +28,7 @@ run_elixir_checks() {
   local project=$1
   (
     cd "$root/$project"
+    run_labeled "$project" mix deps.get
     run_labeled "$project" mix format --check-formatted
     run_labeled "$project" mix credo --strict
     run_labeled "$project" mix dialyzer
