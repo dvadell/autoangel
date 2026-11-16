@@ -61,6 +61,10 @@ def main(argv):
     bad = violations(lines, [int(port) for port in argv[2:]])
     for address, port in bad:
         print(f"unexpected connection to {address}:{port}", file=sys.stderr)
+        for line in lines:
+            match = CONNECT_V4.search(line) or CONNECT_V6.search(line)
+            if match and (match.group(2), int(match.group(1))) == (address, port):
+                print(f"  {line.strip()}", file=sys.stderr)
     print(f"{len(seen)} destination(s) seen, {len(bad)} not configured")
     return 1 if bad else 0
 

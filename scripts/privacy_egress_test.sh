@@ -107,6 +107,6 @@ pids+=("$!")
 # Idle time: telemetry, if any, would show up here.
 sleep "${PRIVACY_IDLE_SECONDS:-20}"
 
-cat "$scratch"/*.strace >"$scratch/all.strace"
+for f in "$scratch"/*.strace; do sed "s|^|[$(basename "$f" .strace)] |" "$f"; done >"$scratch/all.strace"
 python3 "$here/egress_check.py" "$scratch/all.strace" "$ingest_port" "$control_port" "$hook_port" "$db_port" "$console_port"
 echo "privacy egress test: every connection went to a configured destination"
