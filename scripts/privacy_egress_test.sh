@@ -75,7 +75,7 @@ EOF
 
 trace() { # name, command...
   local name=$1; shift
-  strace -f -qq -e trace=connect -o "$scratch/$name.strace" "$@"
+  strace -f -qq -s 200 -e trace=connect,sendto,sendmmsg -o "$scratch/$name.strace" "$@"
 }
 
 export RELEASE_DISTRIBUTION=none RELEASE_COOKIE=privacy
@@ -108,5 +108,9 @@ pids+=("$!")
 sleep "${PRIVACY_IDLE_SECONDS:-20}"
 
 for f in "$scratch"/*.strace; do sed "s|^|[$(basename "$f" .strace)] |" "$f"; done >"$scratch/all.strace"
-python3 "$here/egress_check.py" "$scratch/all.strace" "$ingest_port" "$control_port" "$hook_port" "$db_port" "$console_port"
+python3 "$here/egress_check.py" "$scratch/all.strace" "$ingest_port" "$control_port" "$hook_port" "$db_port" "$console_port" || {
+  echo "DNS queries sent (the name is inside the bytes):" >&2
+  grep -E 'sendto|sendmmsg' "$scratch/all.strace" | head -20 >&2 || true
+  exit 1
+}
 echo "privacy egress test: every connection went to a configured destination"
