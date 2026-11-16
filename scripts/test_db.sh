@@ -45,6 +45,8 @@ up() {
     sleep 1
   done
 
+  # A fresh CI checkout may hold only prod deps; the migration runs in this env.
+  (cd "$root/engine" && mix deps.get >&2)
   (cd "$root/engine" && AUTOANGEL_TEST_DB_PORT=$port mix run --no-start -e '
     {:ok, _} = Application.ensure_all_started(:postgrex)
     port = String.to_integer(System.fetch_env!("AUTOANGEL_TEST_DB_PORT"))
