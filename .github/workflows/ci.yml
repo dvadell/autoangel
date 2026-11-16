@@ -78,6 +78,8 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends strace iproute2
           python3 scripts/egress_check_test.py
+          # Ubuntu 24.04 blocks unprivileged user namespaces by default.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           scripts/privacy_egress_test.sh engine/_build/prod/rel/autoangel console/_build/prod/rel/autoangel_console target/release/autoangel-cli
       - name: Build the images
         run: |
